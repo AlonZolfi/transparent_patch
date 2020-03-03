@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 
 
 class LisaDataset(Dataset):
-    def __init__(self, img_dir, lab_dir, max_lab, img_size, shuffle=True):
+    def __init__(self, img_dir, lab_dir, max_lab, img_size, shuffle=True, transform=None):
         self.img_dir = img_dir
         self.lab_dir = lab_dir
         self.img_size = img_size
@@ -23,6 +23,7 @@ class LisaDataset(Dataset):
         self.img_paths = self.get_image_paths()
         self.lab_paths = self.get_lab_paths()
         self.max_n_labels = max_lab
+        self.transform = transform
 
     def __len__(self):
         return len(self.img_names)
@@ -42,8 +43,8 @@ class LisaDataset(Dataset):
             label = label.unsqueeze(0)
 
         image, label = self.pad_and_scale(image, label)
-        transform = transforms.ToTensor()
-        image = transform(image)
+        if self.transform:
+            image = self.transform(image)
         label = self.pad_lab(label)
         return image, label
 
