@@ -44,7 +44,7 @@ class LisaDataset(Dataset):
 
         image, label = self.pad_and_scale(image, label)
         if self.transform:
-            image = self.transform(image)
+            image = self.transform()(image)
         label = self.pad_lab(label)
         return image, label
 

@@ -47,7 +47,7 @@ def write(x, img):
     t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_PLAIN, 1, 1)[0]
     c2 = c1[0] + t_size[0] + 3, c1[1] + t_size[1] + 4
     cv2.rectangle(img, c1, c2, color, -1)
-    cv2.putText(img, label, (c1[0], c1[1] + t_size[1] + 4), cv2.FONT_HERSHEY_PLAIN, 1, [225, 255, 255], 1);
+    cv2.putText(img, label, (c1[0], c1[1] + t_size[1] + 4), cv2.FONT_HERSHEY_PLAIN, 1, [225, 255, 255], 1)
     return img
 
 
@@ -57,22 +57,58 @@ def arg_parse():
     """
     parser = argparse.ArgumentParser(description='YOLO v3 Cam Demo')
     parser.add_argument("--confidence", dest="confidence", help="Object Confidence to filter predictions", default=0.25)
-    parser.add_argument("--nms_thresh", dest="nms_thresh", help="NMS Threshhold", default=0.01)
+    parser.add_argument("--nms_thresh", dest="nms_thresh", help="NMS Threshhold", default=0.25)
     parser.add_argument("--reso", dest='reso', help=
     "Input resolution of the network. Increase to increase accuracy. Decrease to increase speed",
                         default="320", type=str)
     return parser.parse_args()
 
 
-if __name__ == '__main__':
+def get_files(model_type):
+    if model_type == 'yolov3':
+        cfg_file = "cfg/yolov3.cfg"
+        weights_file = "weights/yolov3.weights"
+        num_classes = 80
+        classes_file = 'data/coco.names'
+    elif model_type == 'yolov3-tiny':
+        cfg_file = "cfg/yolov3-tiny.cfg"
+        weights_file = "weights/yolov3-tiny.weights"
+        num_classes = 80
+        classes_file = 'data/coco.names'
+    elif model_type == 'yolov3-yl-bulb':
+        cfg_file = "cfg/yolov3-tl-small.cfg"
+        weights_file = "weights/yolov3-tl-bulb.pth"
+        num_classes = 2
+        classes_file = 'data/tl-small.names'
+    elif model_type == 'yolov3-tl-box':
+        cfg_file = "cfg/yolov3-tl-small.cfg"
+        weights_file = "weights/yolov3_ckpt_430.pth"
+        num_classes = 2
+        classes_file = 'data/tl-small.names'
+    elif model_type == 'yolov3-signs':
+        cfg_file = "cfg/trafficsigns-lisa.cfg"
+        weights_file = "weights/trafficsigns-lisa_last.weights"
+        num_classes = 47
+        classes_file = 'data/trafficsigns-lisa.names'
+    return cfg_file, weights_file, num_classes, classes_file
 
-    # cfg_file = "cfg/yolov3.cfg"
-    cfg_file = "cfg/trafficlights-lisa.cfg"
-    # weights_file = "weights/yolov3.weights"
-    # weights_file = "weights/trafficlights-lisa_9000.weights"
-    weights_file = "weights/yolov3_ckpt_139.pth"
-    #num_classes = 80
-    num_classes = 6
+
+def get_cap(input_type):
+    if input_type == 'video':
+        videofile = 'videos/vid1trim1.mp4'
+        return videofile
+    elif input_type == 'local_camera':
+        return 0
+    elif input_type == 'ip_camera':
+        return 'http://132.72.80.48:8081'
+
+
+if __name__ == '__main__':
+    model_type = 'yolov3'  # 'yolov3', 'yolov3-tiny', 'yolov3-tl-bulb', 'yolov3-tl-box', 'yolov3-signs'
+    input_type = 'local_camera'  # 'video', 'local_camera', 'ip_camera'
+    output_type = 'show'  # 'show', 'vid_out'
+
+    cfg_file, weights_file, num_classes, classes_file = get_files(model_type)
 
     args = arg_parse()
     confidence = float(args.confidence)
@@ -84,8 +120,10 @@ if __name__ == '__main__':
     bbox_attrs = 5 + num_classes
 
     model = Darknet(cfg_file)
-    #model.load_weights(weights_file)
-    model.load_state_dict(torch.load(weights_file))
+    if weights_file.endswith('weights'):
+        model.load_weights(weights_file)
+    else:
+        model.load_state_dict(torch.load(weights_file))
 
     model.net_info["height"] = args.reso
     inp_dim = int(model.net_info["height"])
@@ -98,12 +136,13 @@ if __name__ == '__main__':
 
     model.eval()
 
-    videofile = 'videos/redfilter2_Trim.mp4'
-
-    #cap = cv2.VideoCapture(0)
-    cap = cv2.VideoCapture(videofile)
+    cap = cv2.VideoCapture(get_cap(input_type))
     cap.set(3, 1280)
     cap.set(4, 720)
+
+    if output_type == 'vid_out':
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        out = cv2.VideoWriter('out_videos/out1.avi', fourcc, 20.0, (640, 480))
 
     assert cap.isOpened(), 'Cannot capture source'
 
@@ -125,10 +164,15 @@ if __name__ == '__main__':
             if type(output) == int:
                 frames += 1
                 print("FPS of the video is {:5.2f}".format(frames / (time.time() - start)))
-                cv2.imshow("frame", orig_im)
-                key = cv2.waitKey(1)
-                if key & 0xFF == ord('q'):
-                    break
+
+                if output_type == 'show':
+                    cv2.imshow("frame", orig_im)
+                    key = cv2.waitKey(1)
+                    if key & 0xFF == ord('q'):
+                        break
+                else:
+                    out.write(orig_im)
+
                 continue
 
             output[:, 1:5] = torch.clamp(output[:, 1:5], 0.0, float(inp_dim)) / inp_dim
@@ -136,16 +180,19 @@ if __name__ == '__main__':
             output[:, [1, 3]] *= frame.shape[1]
             output[:, [2, 4]] *= frame.shape[0]
 
-            #classes = load_classes('data/coco.names')
-            classes = load_classes('data/trafficlights_lisa.names')
+            classes = load_classes(classes_file)
             colors = pkl.load(open("pallete", "rb"))
 
             list(map(lambda x: write(x, orig_im), output))
 
-            cv2.imshow("frame", orig_im)
-            key = cv2.waitKey(1)
-            if key & 0xFF == ord('q'):
-                break
+            if output_type == 'show':
+                cv2.imshow("frame", orig_im)
+                key = cv2.waitKey(1)
+                if key & 0xFF == ord('q'):
+                    break
+            else:
+                out.write(orig_im)
+
             frames += 1
             print("FPS of the video is {:5.2f}".format(frames / (time.time() - start)))
         else:
