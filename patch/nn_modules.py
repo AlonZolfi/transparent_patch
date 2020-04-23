@@ -32,7 +32,7 @@ class MaxProbExtractor(nn.Module):
         output = output.transpose(1, 2).contiguous()  # [batch, 85, 5, 361]
         output = output.view(batch, 5 + self.num_cls, self.num_anchor * h * w)  # [batch, 85, 1805]
         output_objectness = torch.sigmoid(output[:, 4, :])  # [batch, 1805]
-        bboxes = output[:, :5, :]
+        bboxes = output[:, :4, :]  # [batch, 4, 1805]
         output = output[:, 5:5 + self.num_cls, :]  # [batch, 80, 1805]
 
         # perform softmax to normalize probabilities for object classes to [0,1]
@@ -45,6 +45,7 @@ class MaxProbExtractor(nn.Module):
 
         # find the max probability for stop sign
         max_conf, max_conf_idx = torch.max(confs_if_object, dim=1)  # [batch]
+        max_bboxes = torch.index_select(bboxes, dim=2, index=max_conf_idx)
 
         return self.weight * max_conf
 
@@ -70,9 +71,9 @@ class PatchTrainer(nn.Module):
         self.num_of_dots = num_of_dots
         self.param_list = nn.ParameterList()
         for i in range(num_of_dots):
-            center_location = nn.Parameter(torch.rand(2))
-            radius = nn.Parameter(torch.rand(1))
-            color = nn.Parameter(torch.rand(3))
+            center_location = nn.Parameter(torch.rand(2), requires_grad=True)
+            radius = nn.Parameter(torch.rand(1), requires_grad=True)
+            color = nn.Parameter(torch.rand(3), requires_grad=True)
 
             self.param_list.append(center_location)
             self.param_list.append(radius)

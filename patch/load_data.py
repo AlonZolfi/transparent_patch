@@ -3,11 +3,11 @@ import os
 
 import numpy as np
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, SubsetRandomSampler, DataLoader
 
 from torchvision import transforms
 import matplotlib.pyplot as plt
@@ -42,9 +42,16 @@ class LisaDataset(Dataset):
         if label.dim() == 1:
             label = label.unsqueeze(0)
 
-        image, label = self.pad_and_scale(image, label)
+        # image, label = self.pad_and_scale(image, label)
         if self.transform:
-            image = self.transform()(image)
+            image = self.transform(image)
+
+        # lab = label.squeeze(0)
+        # img = transforms.ToPILImage('RGB')(image)
+        # draw = ImageDraw.Draw(img)
+        # x1, y1, x2, y2 = (lab[1] - (lab[3]/2)) * self.img_size, (lab[2] - (lab[4]/2))  * self.img_size, (lab[1] + (lab[3]/2))  * self.img_size, (lab[2] + (lab[4]/2))  * self.img_size
+        # draw.rectangle(((x1, y1), (x2, y2)), outline='red')
+        # img.show()
         label = self.pad_lab(label)
         return image, label
 
@@ -79,18 +86,19 @@ class LisaDataset(Dataset):
             dim_to_pad = 1 if w < h else 2
             if dim_to_pad == 1:
                 padding = (h - w) / 2
-                padded_img = Image.new('RGB', (h, h), color=(127, 127, 127))
+                padded_img = Image.new('RGB', (h, h), color=(255, 255, 255))
                 padded_img.paste(img, (int(padding), 0))
                 lab[:, [1]] = (lab[:, [1]] * w + padding) / h
                 lab[:, [3]] = (lab[:, [3]] * w / h)
             else:
                 padding = (w - h) / 2
-                padded_img = Image.new('RGB', (w, w), color=(127, 127, 127))
+                padded_img = Image.new('RGB', (w, w), color=(255, 255, 255))
                 padded_img.paste(img, (0, int(padding)))
                 lab[:, [2]] = (lab[:, [2]] * h + padding) / w
                 lab[:, [4]] = (lab[:, [4]] * h / w)
         resize = transforms.Resize((self.img_size, self.img_size))
         padded_img = resize(padded_img)  # choose here
+
         return padded_img, lab
 
     def pad_lab(self, lab):
@@ -100,6 +108,41 @@ class LisaDataset(Dataset):
         else:
             padded_lab = lab
         return padded_lab
+
+
+class SplitDataset:
+    def __init__(self, img_dir, lab_dir, max_lab, img_size, transform=None):
+        self.transform = transform
+        self.dataset = LisaDataset(img_dir=img_dir,
+                                   lab_dir=lab_dir,
+                                   max_lab=max_lab,
+                                   img_size=img_size,
+                                   transform=transforms.Compose(
+                                       [transforms.Resize((img_size, img_size)),
+                                        transforms.ToTensor()]))
+
+    def __call__(self, val_split, test_split, shuffle_dataset, random_seed, batch_size, *args, **kwargs):
+        dataset_size = len(self.dataset)
+        indices = list(range(dataset_size))
+        val_split = int(np.floor(val_split * dataset_size))
+        test_split = int(np.floor(test_split * dataset_size))
+        if shuffle_dataset:
+            np.random.seed(random_seed)
+            np.random.shuffle(indices)
+        train_indices = indices[val_split + test_split:]
+        val_indices = indices[:val_split]
+        test_indices = indices[val_split:val_split + test_split]
+
+        # Creating PT data samplers and loaders:
+        train_sampler = SubsetRandomSampler(train_indices)
+        valid_sampler = SubsetRandomSampler(val_indices)
+        test_sampler = SubsetRandomSampler(test_indices)
+
+        train_loader = DataLoader(self.dataset, batch_size=batch_size, sampler=train_sampler, num_workers=4)
+        validation_loader = DataLoader(self.dataset, batch_size=batch_size, sampler=valid_sampler)
+        test_loader = DataLoader(self.dataset, batch_size=batch_size, sampler=test_sampler)
+
+        return train_loader, validation_loader, test_loader
 
 
 def main():
