@@ -18,7 +18,7 @@ class BaseConfiguration:
         self.class_id = 11
         self.patch_size = 608
 
-        self.start_learning_rate = 0.03
+        self.start_learning_rate = 0.001
         self.epochs = 1000
         self.batch_size = 4
 
@@ -26,12 +26,12 @@ class BaseConfiguration:
         self.loss_target = lambda obj, cls: obj * cls
 
         self.max_tv = 0.01
-        self.tv_weight = 0.5
-        self.max_prob_weight = 0.5
+        self.tv_weight = 2.5
+        self.max_prob_weight = 1
         self.iou_weight = 0.1
 
         self.num_of_dots = 10
-        self.alpha = 0.1
+        # self.alpha = 0.1
 
 
 class TrainingOnCluster(BaseConfiguration):
@@ -39,10 +39,6 @@ class TrainingOnCluster(BaseConfiguration):
         super(TrainingOnCluster, self).__init__()
         self.patch_name = 'cluster'
         self.batch_size = 16
-
-        # add sources path
-        sys.path.append('/home/zolfi/transparent_patch/patch')
-        sys.path.append('/home/zolfi/transparent_patch/pytorch-yolo2')
 
 
 class TrainingOnPrivateComputer(BaseConfiguration):

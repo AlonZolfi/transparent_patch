@@ -1,26 +1,29 @@
-# import sys
-# if sys.base_prefix.__contains__('home/zolfi'):
-#     sys.path.append('/home/zolfi/transparent_patch/patch')
-#     sys.path.append('/home/zolfi/transparent_patch/pytorch-yolo2')
+import sys
+import os
+if sys.base_prefix.__contains__('home/zolfi'):
+    sys.path.append('/home/zolfi/transparent_patch/patch')
+    sys.path.append('/home/zolfi/transparent_patch/pytorch-yolo2')
+    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 # else:
 #     from torchviz import make_dot
 #     import cv2
 
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
-from torch import autograd
 
 from torchvision import transforms
 
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import time
+from pathlib import Path
+from collections import OrderedDict
 
 from config import patch_config_types
 from darknet import Darknet
-from load_data import LisaDataset, SplitDataset
+from load_data import SplitDataset
 from nn_modules import MaxProbExtractor, PatchApplier, PatchTrainer, TotalVariation, IoU
 from patch_utils import EarlyStopping
-from PIL import Image, ImageDraw
 
 global device
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -40,22 +43,28 @@ class TrainPatch:
             self.config.num_of_dots,
             self.get_image_size())
 
-        self.patch_applier = PatchApplier(self.config.alpha)
+        self.patch_applier = PatchApplier()
 
         self.prob_extractor = MaxProbExtractor(
-            weight=self.config.tv_weight,
+            weight=self.config.max_prob_weight,
             cls_id=self.config.class_id,
             num_cls=self.config.num_classes,
             config=self.config,
             num_anchor=self.yolo.num_anchors)
 
-        self.total_variation = TotalVariation(weight=self.config.max_prob_weight)
-        self.iou = IoU(weight=self.config.max_prob_weight)
+        self.total_variation = TotalVariation(weight=self.config.tv_weight)
+        self.iou = IoU(weight=self.config.iou_weight)
         # self.patch_transformer = PatchTransformer()
         # self.nps_calculator = NPSCalculator(self.config.printfile, self.config.patch_size)
 
         self.set_multiple_gpu()
         self.set_to_device()
+
+        if os.environ['SLURM_JOBID'] is None:
+            self.current_dir = "saved_patch/" + time.strftime("%d-%m-%Y") + '_' + time.strftime("%H-%M-%S")
+        else:
+            self.current_dir = "saved_patch/" + time.strftime("%d-%m-%Y") + '_' + os.environ['SLURM_JOBID']
+        Path(self.current_dir).mkdir(parents=True, exist_ok=True)
 
         torch.cuda.manual_seed(SEED)
 
@@ -98,30 +107,32 @@ class TrainPatch:
                                                               random_seed=SEED,
                                                               batch_size=self.config.batch_size)
 
-        # adv_patch_cpu1 = torch.full((3, img_size, img_size), dtype=torch.float32, fill_value=1)
-        adv_patch_cpu1 = torch.rand((3, img_size, img_size), dtype=torch.float32)
-        adv_patch_cpu1.requires_grad_(True)
+        alpha_tensor_cpu = torch.full((1, img_size, img_size), dtype=torch.float32, fill_value=0.1)
+        alpha_tensor_cpu.requires_grad_(True)
+        adv_patch_cpu = torch.rand((3, img_size, img_size), dtype=torch.float32)
+        adv_patch_cpu.requires_grad_(True)
 
         epoch_length = len(train_loader)
         print(f'One epoch is {epoch_length} batches')
 
         # optimizer = torch.optim.Adam(self.patch_trainer.parameters(),
-        optimizer = torch.optim.Adam([adv_patch_cpu1],
+        optimizer = torch.optim.Adam([adv_patch_cpu, alpha_tensor_cpu],
                                      lr=self.config.start_learning_rate,
                                      amsgrad=True)
         scheduler = self.config.scheduler_factory(optimizer)
-        early_stop = EarlyStopping(delta=1e-4)
+        early_stop = EarlyStopping(delta=1e-3, current_dir=self.current_dir)
 
         train_losses = []
         val_losses = []
 
         for epoch in range(self.config.epochs):
-            train_loss = 0
-            adv_patch = adv_patch_cpu1.to(device)
+            train_loss = 0.0
+            val_loss = 0.0
+            adv_patch = adv_patch_cpu.to(device)
+            alpha_tensor = alpha_tensor_cpu.to(device)
 
-            for i_batch, (img_batch, lab_batch) in tqdm(enumerate(train_loader),
-                                                        desc=f'Running epoch {epoch}',
-                                                        total=epoch_length):
+            prog_bar = tqdm(enumerate(train_loader), desc=f'Epoch {epoch}', total=epoch_length)
+            for i_batch, (img_batch, lab_batch) in prog_bar:
                 # move tensors to cuda
                 img_batch = img_batch.to(device)
                 lab_batch = lab_batch.to(device)
@@ -131,7 +142,7 @@ class TrainPatch:
                 # adv_patch_cpu = self.patch_trainer(adv_patch_cpu1)  # update patch
                 # adv_patch = adv_patch_cpu.to(device)
 
-                p_img_batch = self.patch_applier(img_batch, adv_patch)  # apply patch on a batch of images
+                p_img_batch = self.patch_applier(img_batch, adv_patch, alpha_tensor)  # apply patch on a batch of images
 
                 output = self.yolo(p_img_batch)  # get yolo output
 
@@ -154,30 +165,39 @@ class TrainPatch:
                 # update parameters
                 optimizer.step()
 
-                adv_patch_cpu1 = torch.clamp(adv_patch_cpu1, 0, 1)
+                # adv_patch_cpu1 = torch.clamp(adv_patch_cpu1, 0, 1)
 
                 # clear gpu
-                del img_batch, lab_batch, loss
-                torch.cuda.empty_cache()
+                # del img_batch, lab_batch, loss
+                # torch.cuda.empty_cache()
                 # make_dot(loss).render("prop_path/iter"+str(i_batch), format="png")
+                prog_bar.set_postfix_str('train-loss: {:.6}'.format(train_loss/(i_batch+1)))
+                if i_batch + 1 == epoch_length:
+                    # calculate epoch losses
+                    train_loss = train_loss / epoch_length
+                    train_losses.append(train_loss)
 
-            # calculate epoch losses
-            train_loss = train_loss / epoch_length
-            train_losses.append(train_loss)
-            tqdm.write('train loss: ' + str(train_loss), end="")
+                    # check on validation
+                    val_loss = self.calc_val_loss(val_loader, adv_patch, alpha_tensor)
+                    val_losses.append(val_loss)
 
-            # check on validation
-            val_loss = self.calc_val_loss(val_loader, adv_patch.data)
-            val_losses.append(val_loss)
-            print('val loss: ' + str(val_loss))
+                    prog_bar.set_postfix_str('train-loss: {:.6}, val-loss: {:.6}'.format(train_loss, val_loss))
 
             # check if loss has decreased
-            early_stop(val_loss, adv_patch)
-            if early_stop.early_stop:
-                print("Training stopped - early stopping")
-                break
+            # early_stop(val_loss, adv_patch, epoch)
+            # if early_stop.early_stop:
+            #     print("Training stopped - early stopping")
+            #     break
 
             scheduler.step(train_loss)
+
+        # save patch with alpha layer
+        final_patch = torch.cat([adv_patch_cpu, alpha_tensor_cpu])
+        transforms.ToPILImage()(final_patch.cpu()).save(self.current_dir+'/final_patch.png', 'PNG')
+
+        # plot train and val loss
+        self.plot_loss(train_losses, val_losses)
+        print("Training finished")
 
     def get_image_size(self):
         if type(self.yolo) == nn.DataParallel:
@@ -186,19 +206,28 @@ class TrainPatch:
             img_size = self.yolo.height
         return int(img_size)
 
-    def calc_val_loss(self, val_loader, adv_patch):
+    def calc_val_loss(self, val_loader, adv_patch, alpha):
         val_loss = 0
         for img_batch, lab_batch in val_loader:
-            img_batch = img_batch.to(device)
-            # lab_batch = lab_batch.to(device)
-            p_img_batch = self.patch_applier(img_batch, adv_patch)
-            output = self.yolo(p_img_batch)
-            max_prob = self.prob_extractor(output)
-            tv = self.total_variation(adv_patch)
-            v_loss = self.loss_function(max_prob, tv)
-            val_loss += v_loss.item()
-            del img_batch, v_loss
+            with torch.no_grad():
+                img_batch = img_batch.to(device)
+                # lab_batch = lab_batch.to(device)
+                p_img_batch = self.patch_applier(img_batch, adv_patch, alpha)
+                output = self.yolo(p_img_batch)
+                max_prob = self.prob_extractor(output)
+                tv = self.total_variation(adv_patch)
+                v_loss = self.loss_function(max_prob, tv)
+                val_loss += v_loss.item()
+                # del img_batch, v_loss
         return val_loss / len(val_loader)
+
+    def plot_loss(self, train_loss, val_loss):
+        epochs = [x+1 for x in range(len(train_loss))]
+        plt.plot(epochs, train_loss, 'b', label='Training loss')
+        plt.plot(epochs, val_loss, 'r', label='Validation loss')
+        plt.title('Training and validation loss')
+        plt.legend(loc='upper right')
+        plt.savefig(self.current_dir+'/loss_plt.png')
 
     def loss_function(self, max_prob, tv):
         max_prob_loss = torch.mean(max_prob)
@@ -207,7 +236,7 @@ class TrainPatch:
 
 
 def main():
-    patch_train = TrainPatch('private')
+    patch_train = TrainPatch('cluster')
     patch_train.train()
 
 

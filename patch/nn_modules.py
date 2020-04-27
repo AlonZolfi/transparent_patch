@@ -55,12 +55,11 @@ class PatchApplier(nn.Module):
     PatchApplier: applies adversarial patches to images.
     Module providing the functionality necessary to apply a patch to all detections in all images in the batch.
     """
-    def __init__(self, alpha):
+    def __init__(self):
         super(PatchApplier, self).__init__()
-        self.alpha = alpha
 
-    def forward(self, img_batch, adv_patch):
-        img_batch = (img_batch * (1.0-self.alpha)) + (adv_patch * self.alpha)
+    def forward(self, img_batch, adv_patch, alpha):
+        img_batch = (img_batch * (1.0-alpha)) + (adv_patch * alpha)
         return img_batch
 
 
