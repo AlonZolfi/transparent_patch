@@ -108,8 +108,11 @@ def detect_skimage(cfgfile, weightfile, imgfile):
 if __name__ == '__main__':
     if len(sys.argv) == 4:
         cfgfile = sys.argv[1]
+        cfgfile = 'cfg\yolo_v2-608.cfg'
         weightfile = sys.argv[2]
+        weightfile = 'weights\yolov2-608.weights'
         imgfile = sys.argv[3]
+        imgfile = '..\datasets\lisa\images\stop_1323803184.avi_image0.png'
         detect(cfgfile, weightfile, imgfile)
         #detect_cv2(cfgfile, weightfile, imgfile)
         #detect_skimage(cfgfile, weightfile, imgfile)

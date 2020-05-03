@@ -8,8 +8,8 @@ class BaseConfiguration:
         Set the defaults.
         """
         self.patch_name = 'base'
-        self.img_dir = '../datasets/lisa/images'
-        self.lab_dir = '../datasets/lisa/annotations'
+        self.img_dir = '../datasets/lisa_debug/images'
+        self.lab_dir = '../datasets/lisa_debug/annotations'
         self.cfg_file = "../pytorch-yolo2/cfg/yolo_v2-608.cfg"
         self.weight_file = "../pytorch-yolo2/weights/yolov2-608.weights"
         # self.printfile = "/home/zolfi/adversarial_yolo_patch/attack/non_printability/30values.txt"
@@ -25,10 +25,10 @@ class BaseConfiguration:
         self.scheduler_factory = lambda x: optim.lr_scheduler.ReduceLROnPlateau(x, 'min', patience=50)
         self.loss_target = lambda obj, cls: obj * cls
 
-        self.max_tv = 0.01
-        self.tv_weight = 2.5
-        self.max_prob_weight = 1
-        self.iou_weight = 0.1
+        self.max_tv = 0.1
+        self.tv_weight = 0.2
+        self.max_prob_weight = 0.4
+        self.pres_det_weight = 0.4
 
         self.num_of_dots = 10
         # self.alpha = 0.1

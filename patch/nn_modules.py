@@ -5,6 +5,10 @@ from torch.nn import functional as F
 from torchvision import transforms
 
 from PIL import ImageDraw, Image
+import numpy as np
+
+global device
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 class MaxProbExtractor(nn.Module):
@@ -32,7 +36,6 @@ class MaxProbExtractor(nn.Module):
         output = output.transpose(1, 2).contiguous()  # [batch, 85, 5, 361]
         output = output.view(batch, 5 + self.num_cls, self.num_anchor * h * w)  # [batch, 85, 1805]
         output_objectness = torch.sigmoid(output[:, 4, :])  # [batch, 1805]
-        bboxes = output[:, :4, :]  # [batch, 4, 1805]
         output = output[:, 5:5 + self.num_cls, :]  # [batch, 80, 1805]
 
         # perform softmax to normalize probabilities for object classes to [0,1]
@@ -45,7 +48,6 @@ class MaxProbExtractor(nn.Module):
 
         # find the max probability for stop sign
         max_conf, max_conf_idx = torch.max(confs_if_object, dim=1)  # [batch]
-        max_bboxes = torch.index_select(bboxes, dim=2, index=max_conf_idx)
 
         return self.weight * max_conf
 
@@ -61,6 +63,75 @@ class PatchApplier(nn.Module):
     def forward(self, img_batch, adv_patch, alpha):
         img_batch = (img_batch * (1.0-alpha)) + (adv_patch * alpha)
         return img_batch
+
+
+class PreserveDetections(nn.Module):
+    """
+    PatchApplier: applies adversarial patches to images.
+    Module providing the functionality necessary to apply a patch to all detections in all images in the batch.
+    """
+    def __init__(self, weight_cls, weight_others, cls_id, num_cls, config, num_anchor):
+        super(PreserveDetections, self).__init__()
+        self.weight_attack_cls = weight_cls
+        self.weight_others = weight_others
+        self.cls_id = cls_id
+        self.num_cls = num_cls
+        self.config = config
+        self.num_anchor = num_anchor
+
+    def forward(self, lab_batch, output_patch, output_clean):
+        batch = output_patch.size(0)
+        assert (output_patch.size(1) == (5 + self.num_cls) * self.num_anchor)
+        h = output_patch.size(2)
+        w = output_patch.size(3)
+
+        # transform the output tensor from [batch, 425, 19, 19] to [batch, 80, 1805]
+        output_objectness_patch, output_patch = self.transform_output(output_patch, batch, h, w)  # [batch, 1805]
+        output_objectness_clean, output_clean = self.transform_output(output_clean, batch, h, w)  # [batch, 1805]
+
+        # perform softmax to normalize probabilities for object classes to [0,1]
+        normal_confs_patch = torch.nn.Softmax(dim=1)(output_patch)  # [batch, 80, 1805]
+        normal_confs_clean = torch.nn.Softmax(dim=1)(output_clean)  # [batch, 80, 1805]
+
+        batch_idx = torch.index_select(lab_batch, 2, torch.tensor([0], dtype=torch.long).to(device))
+        total_loss = torch.empty(0).to(device)
+        for i in range(batch_idx.size(0)):
+            ids = np.unique(batch_idx[i][(batch_idx[i] >= 0) & (batch_idx[i] != self.cls_id)].cpu().numpy().astype(int))
+            if len(ids) == 0:
+                continue
+            # get relevant classes
+            confs_for_class_patch = normal_confs_patch[i, ids, :]
+            confs_for_class_clean = normal_confs_clean[i, ids, :]
+
+            confs_if_object_patch = self.config.loss_target(output_objectness_patch[i], confs_for_class_patch)
+            confs_if_object_clean = self.config.loss_target(output_objectness_clean[i], confs_for_class_clean)
+
+            # find the max prob for each related class
+            max_patch, _ = torch.max(confs_if_object_patch, dim=1)
+            max_clean, _ = torch.max(confs_if_object_clean, dim=1)
+
+            curr_loss = torch.mean(torch.abs(max_patch-max_clean))  # get the mean of each image detections
+            # if total_loss.size(0) == 0:
+            #     curr_loss = curr_loss.unsqueeze(0)
+            total_loss = torch.cat([total_loss, curr_loss.unsqueeze(0)])  # concat with prev results
+
+        if total_loss.size(0) == 0:
+            total_loss = torch.zeros(1)
+
+        confs_for_attacked_class = normal_confs_patch[:, self.cls_id, :]  # [batch, 1805]
+        confs_if_object = self.config.loss_target(output_objectness_patch, confs_for_attacked_class)  # [batch, 1805]
+        # find the max probability for stop sign
+        max_conf, _ = torch.max(confs_if_object, dim=1)  # [batch]
+
+        return self.weight_attack_cls * max_conf, self.weight_others * total_loss
+
+    def transform_output(self, output, batch, h, w):
+        output = output.view(batch, self.num_anchor, 5 + self.num_cls, h * w)  # [batch, 5, 85, 361]
+        output = output.transpose(1, 2).contiguous()  # [batch, 85, 5, 361]
+        output = output.view(batch, 5 + self.num_cls, self.num_anchor * h * w)  # [batch, 85, 1805]
+        output_objectness_patch = torch.sigmoid(output[:, 4, :])  # [batch, 1805]
+        output = output[:, 5:5 + self.num_cls, :]  # [batch, 80, 1805]
+        return output_objectness_patch, output
 
 
 class PatchTrainer(nn.Module):

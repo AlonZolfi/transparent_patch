@@ -46,12 +46,6 @@ class LisaDataset(Dataset):
         if self.transform:
             image = self.transform(image)
 
-        # lab = label.squeeze(0)
-        # img = transforms.ToPILImage('RGB')(image)
-        # draw = ImageDraw.Draw(img)
-        # x1, y1, x2, y2 = (lab[1] - (lab[3]/2)) * self.img_size, (lab[2] - (lab[4]/2))  * self.img_size, (lab[1] + (lab[3]/2))  * self.img_size, (lab[2] + (lab[4]/2))  * self.img_size
-        # draw.rectangle(((x1, y1), (x2, y2)), outline='red')
-        # img.show()
         label = self.pad_lab(label)
         return image, label
 
@@ -104,7 +98,7 @@ class LisaDataset(Dataset):
     def pad_lab(self, lab):
         pad_size = self.max_n_labels - lab.shape[0]
         if pad_size > 0:
-            padded_lab = F.pad(lab, [0, 0, 0, pad_size], value=1)
+            padded_lab = F.pad(lab, [0, 0, 0, pad_size], value=-1)
         else:
             padded_lab = lab
         return padded_lab

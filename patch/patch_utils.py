@@ -48,7 +48,6 @@ class EarlyStopping:
         """
         if self.verbose:
             print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving patch ...')
-        print('Saving to ' + self.current_dir + '/patch_' + str(epoch))
         transforms.ToPILImage()(patch.cpu()).save(self.current_dir +
                                                   '/patch_' +
                                                   str(epoch) +
