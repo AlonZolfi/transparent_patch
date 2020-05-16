@@ -2,10 +2,10 @@
 
 ### sbatch config parameters must start with #SBATCH, to ignore just add another # - like ##SBATCH
 
-#SBATCH --partition gtx1080			### specify partition name where to run a job
+#SBATCH --partition short		### specify partition name where to run a job
 		
 ##SBATCH --time 1-11:00:00			### limit the time of job running, partition limit can override this
-		
+
 #SBATCH --job-name patch-train			### name of the job
 #SBATCH --output /home/zolfi/jobs/job-%J.log			### output log for running job - %J for job number
 ##SBATCH --mail-user=zolfi@post.bgu.ac.il	### users email for sending job status

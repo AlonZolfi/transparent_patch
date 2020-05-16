@@ -20,7 +20,6 @@ class EarlyStopping:
         self.verbose = verbose
         self.counter = 0
         self.best_score = None
-        self.early_stop = False
         self.val_loss_min = np.Inf
         self.delta = delta
         self.current_dir = current_dir
@@ -36,11 +35,13 @@ class EarlyStopping:
             self.counter += 1
             print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
             if self.counter >= self.patience:
-                self.early_stop = True
+                print("Training stopped - early stopping")
+                return True
         else:
             self.best_score = score
             self.save_checkpoint(val_loss, patch, epoch)
             self.counter = 0
+        return False
 
     def save_checkpoint(self, val_loss, patch, epoch):
         """
@@ -48,8 +49,9 @@ class EarlyStopping:
         """
         if self.verbose:
             print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving patch ...')
-        transforms.ToPILImage()(patch.cpu()).save(self.current_dir +
-                                                  '/patch_' +
-                                                  str(epoch) +
-                                                  '.png', 'PNG')
+        transforms.ToPILImage()(patch).save(self.current_dir +
+                                            '/saved_patches' +
+                                            '/patch_' +
+                                            str(epoch) +
+                                            '.png', 'PNG')
         self.val_loss_min = val_loss
