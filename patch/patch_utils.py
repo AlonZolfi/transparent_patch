@@ -1,7 +1,6 @@
 import numpy as np
 from torchvision import transforms
 
-
 class EarlyStopping:
     """
     Early stops the training if validation loss doesn't improve after a given patience.

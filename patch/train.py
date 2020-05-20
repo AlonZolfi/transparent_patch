@@ -22,11 +22,13 @@ import time
 from pathlib import Path
 import subprocess
 import pickle
+import numpy as np
+import json
 
 from config import patch_config_types
 from darknet import Darknet
 from load_data import SplitDataset
-from nn_modules import PatchApplier, PatchTrainer, TotalVariation, PreserveDetections
+from nn_modules import PatchApplier, DotApplier, TotalVariation, PreserveDetections
 from patch_utils import EarlyStopping
 
 global device
@@ -43,7 +45,7 @@ class TrainPatch:
         self.yolo.load_weights(self.config.weight_file)
         self.yolo.eval()
 
-        self.patch_trainer = PatchTrainer(
+        self.dot_applier = DotApplier(
             self.config.num_of_dots,
             self.get_image_size())
 
@@ -56,13 +58,15 @@ class TrainPatch:
         #     config=self.config,
         #     num_anchor=self.yolo.num_anchors)
 
+        self.clean_img_dict = np.load('clean_img_conf.npy', allow_pickle=True).item()
         self.preserve_detec = PreserveDetections(
             weight_cls=self.config.max_prob_weight,
             weight_others=self.config.pres_det_weight,
             cls_id=self.config.class_id,
             num_cls=self.config.num_classes,
             config=self.config,
-            num_anchor=self.yolo.num_anchors
+            num_anchor=self.yolo.num_anchors,
+            clean_img_conf=self.clean_img_dict
         )
         self.total_variation = TotalVariation(weight=self.config.tv_weight)
         # self.iou = IoU(weight=self.config.iou_weight)
@@ -76,7 +80,7 @@ class TrainPatch:
                                            dtype=torch.float32,
                                            fill_value=0.1,
                                            requires_grad=True)
-        self.adv_patch_cpu = torch.rand((3, img_size, img_size), dtype=torch.float32, requires_grad=True)
+        self.adv_patch_cpu = torch.full((3, img_size, img_size), dtype=torch.float32, fill_value=1, requires_grad=True)
 
         self.set_multiple_gpu()
         self.set_to_device()
@@ -98,24 +102,25 @@ class TrainPatch:
         self.max_prob_losses = []
         self.cor_det_losses = []
         self.tv_losses = []
+        self.train_acc = []
+        self.val_acc = []
+        self.final_epochs = self.config.epochs
 
         if 'SLURM_JOBID' not in os.environ.keys():
             self.current_dir = "experiments/" + time.strftime("%d-%m-%Y") + '_' + time.strftime("%H-%M-%S")
         else:
             self.current_dir = "experiments/" + time.strftime("%d-%m-%Y") + '_' + os.environ['SLURM_JOBID']
-        Path(self.current_dir).mkdir(parents=True, exist_ok=True)
-        Path(self.current_dir + '/final_results').mkdir(parents=True, exist_ok=True)
-        Path(self.current_dir + '/saved_patches').mkdir(parents=True, exist_ok=True)
-        Path(self.current_dir + '/losses').mkdir(parents=True, exist_ok=True)
+        self.create_folders()
 
-        subprocess.Popen(['tensorboard', '--logdir=' + self.current_dir + '/runs'])
-        self.writer = SummaryWriter(self.current_dir + '/runs')
+        # subprocess.Popen(['tensorboard', '--logdir=' + self.current_dir + '/runs'])
+        # self.writer = SummaryWriter(self.current_dir + '/runs')
         self.writer = None
 
         torch.manual_seed(SEED)
 
     def set_to_device(self):
         self.yolo = self.yolo.to(device)
+        self.dot_applier = self.dot_applier.to(device)
         self.patch_applier = self.patch_applier.to(device)
         self.total_variation = self.total_variation.to(device)
         self.preserve_detec = self.preserve_detec.to(device)
@@ -127,6 +132,7 @@ class TrainPatch:
         if torch.cuda.device_count() > 1:
             print("more than 1")
             self.yolo = DP(self.yolo)
+            self.dot_applier = DP(self.dot_applier)
             self.patch_applier = DP(self.patch_applier)
             self.total_variation = DP(self.total_variation)
             self.preserve_detec = DP(self.preserve_detec)
@@ -135,12 +141,19 @@ class TrainPatch:
             # self.patch_transformer = torch.nn.DataParallel(self.patch_transformer)
             # self.nps_calculator = torch.nn.DataParallel(self.nps_calculator)
 
+    def create_folders(self):
+        Path(self.current_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.current_dir + '/final_results').mkdir(parents=True, exist_ok=True)
+        Path(self.current_dir + '/saved_patches').mkdir(parents=True, exist_ok=True)
+        Path(self.current_dir + '/losses').mkdir(parents=True, exist_ok=True)
+        Path(self.current_dir + '/acc').mkdir(parents=True, exist_ok=True)
+
     def train(self):
         epoch_length = len(self.train_loader)
         print(f'One epoch is {epoch_length} batches', flush=True)
 
-        # optimizer = torch.optim.Adam(self.patch_trainer.parameters(),
-        optimizer = Adam([self.adv_patch_cpu, self.alpha_tensor_cpu],
+        optimizer = Adam(self.dot_applier.parameters(),
+                         # optimizer = Adam([self.adv_patch_cpu, self.alpha_tensor_cpu],
                          lr=self.config.start_learning_rate,
                          amsgrad=True)
         scheduler = self.config.scheduler_factory(optimizer)
@@ -152,10 +165,12 @@ class TrainPatch:
             cor_det_loss = 0.0
             train_loss = 0.0
             val_loss = 0.0
+            train_acc = 0.0
+            val_acc = 0.0
 
             progress_bar = tqdm(enumerate(self.train_loader), desc=f'Epoch {epoch}', total=epoch_length)
-            prog_bar_desc = 'train-loss: {:.6}, maxprob-loss: {:.6}, tv-loss: {:.6}, corr det-loss: {:.6}'
-            for i_batch, (img_batch, lab_batch) in progress_bar:
+            prog_bar_desc = 'train-loss: {:.6}, train-acc: {:.6}, maxprob-loss: {:.6}, tv-loss: {:.6}, corr det-loss: {:.6}'
+            for i_batch, (img_batch, lab_batch, img_names) in progress_bar:
                 # move tensors to cuda
                 img_batch = img_batch.to(device)
                 lab_batch = lab_batch.to(device)
@@ -163,18 +178,15 @@ class TrainPatch:
                 alpha_tensor = self.alpha_tensor_cpu.to(device)
 
                 # forward prop
-                # adv_batch_t = self.patch_transformer(adv_patch, lab_batch, img_size, True, False)
-                # adv_patch_cpu = self.patch_trainer(adv_patch_cpu1)  # update patch
-                # adv_patch = adv_patch_cpu.to(device)
+                adv_patch = self.dot_applier(adv_patch)  # update patch
 
                 # apply patch on a batch of images
                 applied_batch = self.patch_applier(img_batch, adv_patch, alpha_tensor)
 
                 output_patch = self.yolo(applied_batch)  # get yolo output with patch
-                # output_clean = self.yolo(img_batch)  # get yolo output without patch
 
                 # max_prob, cor_det = self.preserve_detec(lab_batch, output_patch, output_clean)
-                max_prob, cor_det = self.preserve_detec(lab_batch, output_patch)
+                max_prob, cor_det = self.preserve_detec(lab_batch, output_patch, img_names)
                 tv = self.total_variation(adv_patch)  # calculate patch total variation
 
                 # calculate loss
@@ -186,6 +198,8 @@ class TrainPatch:
                 cor_det_loss += loss_arr[2].item()
                 train_loss += loss.item()
 
+                train_acc += self.accuracy_score(lab_batch, output_patch, img_names)
+
                 # back prop
                 optimizer.zero_grad()
                 loss.backward()
@@ -193,20 +207,23 @@ class TrainPatch:
                 # update parameters
                 optimizer.step()
 
-                # adv_patch_cpu1 = torch.clamp(adv_patch_cpu1, 0, 1)
+                # keep patch values within (0,1) range
+                # self.adv_patch_cpu = torch.clamp(self.adv_patch_cpu, 0.000001, 0.999999)
 
                 # make_dot(loss).render("prop_path/graph"+str(i_batch), format="png")
                 progress_bar.set_postfix_str(prog_bar_desc.format(train_loss / (i_batch + 1),
+                                                                  train_acc / (i_batch + 1),
                                                                   max_prob_loss / (i_batch + 1),
                                                                   tv_loss / (i_batch + 1),
                                                                   cor_det_loss / (i_batch + 1)))
                 if i_batch % 10 == 0 and self.writer is not None:
-                    self.write_to_tensorboard(train_loss, max_prob_loss, tv_loss, cor_det_loss,
+                    self.write_to_tensorboard(train_loss, train_acc, max_prob_loss, tv_loss, cor_det_loss,
                                               epoch_length, epoch, i_batch, optimizer)
 
                 if i_batch + 1 == epoch_length:
                     self.last_batch_calc(epoch_length, progress_bar, prog_bar_desc,
-                                         train_loss, max_prob_loss, tv_loss, cor_det_loss, optimizer, epoch, i_batch)
+                                         train_loss, max_prob_loss, tv_loss, cor_det_loss, train_acc,
+                                         optimizer, epoch, i_batch)
 
                 # clear gpu
                 del img_batch, lab_batch, adv_patch, alpha_tensor, applied_batch, \
@@ -215,6 +232,7 @@ class TrainPatch:
 
             # check if loss has decreased
             if early_stop(self.val_losses[-1], self.adv_patch_cpu, epoch):
+                self.final_epochs = epoch
                 break
 
             scheduler.step(val_loss)
@@ -228,9 +246,10 @@ class TrainPatch:
             img_size = self.yolo.height
         return int(img_size)
 
-    def evaluate_loss(self, loader):
+    def evaluate_loss_and_acc(self, loader):
         total_loss = 0.0
-        for img_batch, lab_batch in loader:
+        total_acc = 0.0
+        for img_batch, lab_batch, img_names in loader:
             with torch.no_grad():
                 img_batch = img_batch.to(device)
                 lab_batch = lab_batch.to(device)
@@ -241,13 +260,64 @@ class TrainPatch:
                 # output_clean = self.yolo(img_batch)
                 tv = self.total_variation(adv_patch)
                 # max_prob, cor_det = self.preserve_detec(lab_batch, output_patch, output_clean)
-                max_prob, cor_det = self.preserve_detec(lab_batch, output_patch)
+                max_prob, cor_det = self.preserve_detec(lab_batch, output_patch, img_names)
                 batch_loss, _ = self.loss_function(max_prob, tv, cor_det)
                 total_loss += batch_loss.item()
+                total_acc += self.accuracy_score(lab_batch, output_patch, img_names)
                 del img_batch, lab_batch, adv_patch, alpha, applied_batch, \
                     output_patch, tv, max_prob, cor_det
                 torch.cuda.empty_cache()
-        return total_loss / len(loader)
+        loss = total_loss / len(loader)
+        acc = total_acc / len(loader)
+        return loss, acc
+
+    def accuracy_score(self, lab_batch, output, img_names):
+        def get_correct_ids():
+            ids = np.unique(
+                batch_idx[i][(batch_idx[i] >= 0) & (batch_idx[i] != self.config.class_id)].cpu().numpy().astype(int))
+            clean_img_values = []
+            for lab_id in ids:
+                clean_img_values.append(self.clean_img_dict[img_names[i]][lab_id])
+            max_clean = torch.tensor(clean_img_values, device=device)
+            clean_gt = (max_clean > conf_threshold).cpu().numpy()
+            return np.array(ids)[clean_gt].tolist()
+        not_attacked_acc = []
+        conf_threshold = 0.5
+        batch = output.size(0)
+        h = output.size(2)
+        w = output.size(3)
+        output = output.view(batch, self.yolo.num_anchors, 5 + self.config.num_classes, h * w)  # [batch, 5, 85, 361]
+        output = output.transpose(1, 2).contiguous()  # [batch, 85, 5, 361]
+        output = output.view(batch, 5 + self.config.num_classes, self.yolo.num_anchors * h * w)  # [batch, 85, 1805]
+        output_objectness = torch.sigmoid(output[:, 4, :])  # [batch, 1805]
+        output = output[:, 5:5 + self.config.num_classes, :]  # [batch, 80, 1805]
+        normal_confs = torch.nn.Softmax(dim=1)(output)  # [batch, 80, 1805]
+        confs_for_attacked_class = normal_confs[:, self.config.class_id, :]  # [batch, 1805]
+
+        batch_idx = torch.index_select(lab_batch, 2, torch.tensor([0], dtype=torch.long).to(device))
+        for i in range(batch_idx.size(0)):
+            ids = get_correct_ids()
+            if len(ids) == 0:
+                not_attacked_acc.append(1)
+                continue
+            # get relevant classes
+            confs_for_class = normal_confs[i, ids, :]
+            confs_if_object_other = self.config.loss_target(output_objectness[i], confs_for_class)
+
+            # find the max prob for each related class
+            max_conf_other, _ = torch.max(confs_if_object_other, dim=1)
+            clean_img_values = []
+            for lab_id in ids:
+                clean_img_values.append(self.clean_img_dict[img_names[i]][lab_id])
+
+            not_attacked_acc.append(int((max_conf_other > conf_threshold).sum().item() / torch.numel(max_conf_other)))
+
+        confs_if_object = self.config.loss_target(output_objectness, confs_for_attacked_class)  # [batch, 1805]
+        # find the max probability for stop sign
+        max_conf, _ = torch.max(confs_if_object, dim=1)  # [batch]
+        attacked_acc = ((~(max_conf > conf_threshold)).int()).detach().cpu().numpy()
+        acc = np.mean((0.5 * attacked_acc) + (0.5 * np.array(not_attacked_acc)))
+        return acc
 
     def plot_train_val_loss(self):
         epochs = [x + 1 for x in range(len(self.train_losses))]
@@ -258,6 +328,17 @@ class TrainPatch:
         plt.ylabel('Loss')
         plt.legend(loc='upper right')
         plt.savefig(self.current_dir + '/final_results/train_val_loss_plt.png')
+        plt.close()
+
+    def plot_train_val_acc(self):
+        epochs = [x + 1 for x in range(len(self.train_acc))]
+        plt.plot(epochs, self.train_acc, 'b', label='Training accuracy')
+        plt.plot(epochs, self.val_acc, 'r', label='Validation accuracy')
+        plt.title('Training and validation accuracy')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.legend(loc='upper right')
+        plt.savefig(self.current_dir + '/final_results/train_val_acc_plt.png')
         plt.close()
 
     def plot_separate_loss(self):
@@ -295,24 +376,34 @@ class TrainPatch:
             pickle.dump(self.cor_det_losses, fp)
         with open(self.current_dir + '/losses/tv_losses', 'wb') as fp:
             pickle.dump(self.tv_losses, fp)
+        with open(self.current_dir + '/acc/train_acc', 'wb') as fp:
+            pickle.dump(self.train_acc, fp)
+        with open(self.current_dir + '/acc/val_acc', 'wb') as fp:
+            pickle.dump(self.val_acc, fp)
         # calculate test loss
-        test_loss = self.evaluate_loss(self.test_loader)
+        test_loss, test_acc = self.evaluate_loss_and_acc(self.test_loader)
         print("Test loss: " + str(test_loss))
+        print("Test acc: " + str(test_acc))
         row_to_csv = self.current_dir.split('/')[-1] + ',' + \
                      str(self.train_losses[-1]) + ',' + \
                      str(self.val_losses[-1]) + ',' + \
                      str(test_loss) + ',' + \
+                     str(self.train_acc[-1]) + ',' + \
+                     str(self.val_acc[-1]) + ',' + \
+                     str(test_acc) + ',' + \
                      str(self.max_prob_losses[-1]) + ',' + \
                      str(self.cor_det_losses[-1]) + ',' + \
-                     str(self.tv_losses[-1]) + '\n'
+                     str(self.tv_losses[-1]) + ',' + \
+                     str(self.final_epochs) + '\n'
         # write results to csv
         with open('experiments/results.csv', 'a') as fd:
             fd.write(row_to_csv)
 
-    def write_to_tensorboard(self, train_loss, max_prob_loss, tv_loss,
+    def write_to_tensorboard(self, train_loss, train_acc, max_prob_loss, tv_loss,
                              cor_det_loss, epoch_length, epoch, i_batch, optimizer):
         iteration = epoch_length * epoch + i_batch
         self.writer.add_scalar('train_loss', train_loss / (i_batch + 1), iteration)
+        self.writer.add_scalar('train_acc', train_acc / (i_batch + 1), iteration)
         self.writer.add_scalar('loss/max_prob_loss', max_prob_loss / (i_batch + 1), iteration)
         self.writer.add_scalar('loss/tv_loss', tv_loss / (i_batch + 1), iteration)
         self.writer.add_scalar('loss/cor_det_loss', cor_det_loss / (i_batch + 1), iteration)
@@ -321,9 +412,10 @@ class TrainPatch:
         self.writer.add_image('patch', self.adv_patch_cpu, iteration)
 
     def last_batch_calc(self, epoch_length, progress_bar, prog_bar_desc,
-                        train_loss, max_prob_loss, tv_loss, cor_det_loss, optimizer, epoch, i_batch):
+                        train_loss, max_prob_loss, tv_loss, cor_det_loss, train_acc,
+                        optimizer, epoch, i_batch):
         # calculate epoch losses
-        train_loss = train_loss / epoch_length
+        train_loss /= epoch_length
         max_prob_loss /= epoch_length
         tv_loss /= epoch_length
         cor_det_loss /= epoch_length
@@ -332,28 +424,77 @@ class TrainPatch:
         self.tv_losses.append(tv_loss)
         self.cor_det_losses.append(cor_det_loss)
 
-        # check on validation
-        val_loss = self.evaluate_loss(self.val_loader)
-        self.val_losses.append(val_loss)
+        train_acc /= epoch_length
+        self.train_acc.append(train_acc)
 
-        prog_bar_desc += ', val-loss: {:.6}, lr: {:.6}'
+        # check on validation
+        val_loss, val_acc = self.evaluate_loss_and_acc(self.val_loader)
+        self.val_losses.append(val_loss)
+        self.val_acc.append(val_acc)
+
+        prog_bar_desc += ', val-loss: {:.6}, val-acc: {:.6}, lr: {:.6}'
         progress_bar.set_postfix_str(prog_bar_desc.format(train_loss,
+                                                          train_acc,
                                                           max_prob_loss,
                                                           tv_loss,
                                                           cor_det_loss,
                                                           val_loss,
+                                                          val_acc,
                                                           optimizer.param_groups[0]['lr']))
         if self.writer is not None:
             self.writer.add_scalar('val_loss', val_loss, epoch_length * epoch + i_batch)
+            self.writer.add_scalar('val_acc', val_acc, epoch_length * epoch + i_batch)
+
+    def get_clean_image_conf(self):
+        clean_img_dict = dict()
+        for loader in [self.train_loader, self.val_loader, self.test_loader]:
+            for img_batch, lab_batch, img_name in loader:
+                img_batch = img_batch.to(device)
+                lab_batch = lab_batch.to(device)
+
+                output = self.yolo(img_batch)
+                batch = output.size(0)
+                h = output.size(2)
+                w = output.size(3)
+                output = output.view(batch, self.yolo.num_anchors, 5 + self.config.num_classes, h * w)  # [batch, 5, 85, 361]
+                output = output.transpose(1, 2).contiguous()  # [batch, 85, 5, 361]
+                output = output.view(batch, 5 + self.config.num_classes, self.yolo.num_anchors * h * w)  # [batch, 85, 1805]
+                output_objectness = torch.sigmoid(output[:, 4, :])  # [batch, 1805]
+                output = output[:, 5:5 + self.config.num_classes, :]  # [batch, 80, 1805]
+                normal_confs = torch.nn.Softmax(dim=1)(output)  # [batch, 80, 1805]
+                batch_idx = torch.index_select(lab_batch, 2, torch.tensor([0], dtype=torch.long).to(device))
+                for i in range(batch_idx.size(0)):
+                    ids = np.unique(
+                        batch_idx[i][(batch_idx[i] >= 0) & (batch_idx[i] != self.config.class_id)].cpu().numpy().astype(int))
+                    if len(ids) == 0:
+                        continue
+                    clean_img_dict[img_name[i]] = dict()
+                    # get relevant classes
+                    confs_for_class = normal_confs[i, ids, :]
+                    confs_if_object = self.config.loss_target(output_objectness[i], confs_for_class)
+
+                    # find the max prob for each related class
+                    max_conf, _ = torch.max(confs_if_object, dim=1)
+                    for j, label in enumerate(ids):
+                        clean_img_dict[img_name[i]][label] = max_conf[j].item()
+
+                del img_batch, lab_batch, output, output_objectness, normal_confs, batch_idx
+                torch.cuda.empty_cache()
+
+        # with open('clean_img_conf.txt', 'w') as file:
+        #     file.write(json.dumps(clean_img_dict))
+        print(len(clean_img_dict))
+        np.save('clean_img_conf.npy', clean_img_dict)
 
 
 def main():
-    # mode = 'private'
-    mode = 'cluster'
+    mode = 'private'
+    # mode = 'cluster'
     patch_train = TrainPatch(mode)
     patch_train.train()
     patch_train.save_final_results()
     patch_train.plot_train_val_loss()
+    patch_train.plot_train_val_acc()
     patch_train.plot_separate_loss()
     print('Writing final results finished', flush=True)
 

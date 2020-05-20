@@ -47,7 +47,7 @@ class LisaDataset(Dataset):
             image = self.transform(image)
 
         label = self.pad_lab(label)
-        return image, label
+        return image, label, self.img_names[idx]
 
     def get_image_names(self):
         png_images = fnmatch.filter(os.listdir(self.img_dir), '*.png')

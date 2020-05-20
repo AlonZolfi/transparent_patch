@@ -3,12 +3,12 @@ from torch import nn
 from torch.nn import functional as F
 
 from torchvision import transforms
+from torchvision.transforms import functional as TF
 
-from PIL import ImageDraw, Image
 import numpy as np
 
 global device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 class PatchApplier(nn.Module):
@@ -95,49 +95,6 @@ class PatchApplier(nn.Module):
 #         return output_objectness_patch, output
 
 
-class PatchTrainer(nn.Module):
-    def __init__(self, num_of_dots, img_size) -> None:
-        super(PatchTrainer, self).__init__()
-        self.img_size = img_size
-        self.num_of_dots = num_of_dots
-        self.param_list = nn.ParameterList()
-        for i in range(num_of_dots):
-            center_location = nn.Parameter(torch.rand(2), requires_grad=True)
-            radius = nn.Parameter(torch.rand(1), requires_grad=True)
-            color = nn.Parameter(torch.rand(3), requires_grad=True)
-
-            self.param_list.append(center_location)
-            self.param_list.append(radius)
-            self.param_list.append(color)
-
-    def forward(self, adv_patch):
-        for i in range(self.num_of_dots):
-            mask_img = Image.new('RGB', size=(self.img_size, self.img_size), color=(255, 255, 255))
-            draw = ImageDraw.Draw(mask_img)
-
-            center = self.state_dict().get('param_list.'+str(3*i))
-            radius = self.state_dict().get('param_list.'+str((3*i)+1))
-            tensor_color = self.state_dict().get('param_list.'+str((3*i)+2))
-            color = [c.item() for c in tensor_color]
-            r, g, b = color[0], color[1], color[2]
-            x_center, y_center, radius = self.get_correct_param_values(center, radius)
-
-            draw.ellipse((x_center-radius, y_center-radius, x_center+radius, y_center+radius), fill=(0, 0, 0))
-            one_indices = (transforms.ToTensor()(mask_img) == 0)
-
-            adv_patch[0].masked_fill_(mask=one_indices[0], value=r)
-            adv_patch[1].masked_fill_(mask=one_indices[1], value=g)
-            adv_patch[2].masked_fill_(mask=one_indices[2], value=b)
-
-        return adv_patch
-
-    def get_correct_param_values(self, center, radius):
-        x_center = center[0] * self.img_size
-        y_center = center[1] * self.img_size
-        radius = radius * (self.img_size / 5)
-        return int(x_center), int(y_center), int(radius)
-
-
 class TotalVariation(nn.Module):
     def __init__(self, weight) -> None:
         super(TotalVariation, self).__init__()
@@ -148,6 +105,27 @@ class TotalVariation(nn.Module):
         w_tv = F.l1_loss(adv_patch[:, :, 1:], adv_patch[:, :, :-1], reduction='mean')  # calc width tv
         loss = h_tv + w_tv
         return self.weight * loss
+
+
+class DotApplier(nn.Module):
+    def __init__(self, num_of_dots, img_size):
+        super(DotApplier, self).__init__()
+        self.img_size = img_size
+        self.num_of_dots = num_of_dots
+        self.width = 0.05
+        self.params = nn.Parameter(torch.rand(size=(num_of_dots, 2), device=device), requires_grad=True)
+
+    def forward(self, adv_patch):
+        for i in range(self.num_of_dots):
+            x_center = self.params[i, 0]
+            y_center = self.params[i, 1]
+            x1 = torch.floor((x_center-(self.width/2))*self.img_size).long()
+            x2 = torch.floor((x_center+(self.width/2))*self.img_size).long()
+            y1 = torch.floor((y_center-(self.width/2))*self.img_size).long()
+            y2 = torch.floor((y_center+(self.width/2))*self.img_size).long()
+            adv_patch[:, x1:x2, y1:y2] = 30
+            # transforms.ToPILImage()(adv_patch.cpu()).show()
+        return adv_patch
 
 
 class IoU(nn.Module):
@@ -201,7 +179,7 @@ class PreserveDetections(nn.Module):
     PatchApplier: applies adversarial patches to images.
     Module providing the functionality necessary to apply a patch to all detections in all images in the batch.
     """
-    def __init__(self, weight_cls, weight_others, cls_id, num_cls, config, num_anchor):
+    def __init__(self, weight_cls, weight_others, cls_id, num_cls, config, num_anchor, clean_img_conf):
         super(PreserveDetections, self).__init__()
         self.weight_attack_cls = weight_cls
         self.weight_others = weight_others
@@ -209,8 +187,9 @@ class PreserveDetections(nn.Module):
         self.num_cls = num_cls
         self.config = config
         self.num_anchor = num_anchor
+        self.clean_img_conf = clean_img_conf
 
-    def forward(self, lab_batch, output_patch):
+    def forward(self, lab_batch, output_patch, img_name):
         batch_patch = output_patch.size(0)
         assert (output_patch.size(1) == (5 + self.num_cls) * self.num_anchor)
         h_patch = output_patch.size(2)
@@ -235,7 +214,11 @@ class PreserveDetections(nn.Module):
 
             # find the max prob for each related class
             max_patch, _ = torch.max(confs_if_object_patch, dim=1)
-            max_clean = torch.full_like(max_patch, fill_value=0.8)
+
+            clean_img_values = []
+            for lab_id in ids:
+                clean_img_values.append(self.clean_img_conf[img_name[i]][lab_id])
+            max_clean = torch.tensor(clean_img_values, device=device)
 
             curr_loss = torch.mean(torch.abs(max_clean-max_patch))  # get the mean of each image detections
 
