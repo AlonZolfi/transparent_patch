@@ -23,7 +23,6 @@ from pathlib import Path
 import subprocess
 import pickle
 import numpy as np
-import json
 
 from config import patch_config_types
 from darknet import Darknet
@@ -76,11 +75,11 @@ class TrainPatch:
         self.max_tv = torch.tensor(self.config.max_tv).to(device)
 
         img_size = self.yolo.height
-        self.alpha_tensor_cpu = torch.full((1, img_size, img_size),
+        self.alpha_tensor_cpu = torch.full((1, 1, img_size, img_size),
                                            dtype=torch.float32,
-                                           fill_value=0.1,
+                                           fill_value=0.4,
                                            requires_grad=True)
-        self.adv_patch_cpu = torch.full((3, img_size, img_size), dtype=torch.float32, fill_value=1, requires_grad=True)
+        self.adv_patch_cpu = torch.full((1, 3, img_size, img_size), dtype=torch.float32, fill_value=1)
 
         self.set_multiple_gpu()
         self.set_to_device()
@@ -166,7 +165,6 @@ class TrainPatch:
             train_loss = 0.0
             val_loss = 0.0
             train_acc = 0.0
-            val_acc = 0.0
 
             progress_bar = tqdm(enumerate(self.train_loader), desc=f'Epoch {epoch}', total=epoch_length)
             prog_bar_desc = 'train-loss: {:.6}, train-acc: {:.6}, maxprob-loss: {:.6}, tv-loss: {:.6}, corr det-loss: {:.6}'
@@ -361,9 +359,9 @@ class TrainPatch:
 
     def save_final_results(self):
         # save patch
-        transforms.ToPILImage()(self.adv_patch_cpu.cpu()).save(self.current_dir + '/final_results/final_patch_wo_alpha.png', 'PNG')
-        transforms.ToPILImage()(self.alpha_tensor_cpu.cpu()).save(self.current_dir + '/final_results/alpha_channel.png', 'PNG')
-        final_patch = torch.cat([self.adv_patch_cpu, self.alpha_tensor_cpu])
+        transforms.ToPILImage()(self.adv_patch_cpu.squeeze(0)).save(self.current_dir + '/final_results/final_patch_wo_alpha.png', 'PNG')
+        transforms.ToPILImage()(self.alpha_tensor_cpu.squeeze(0)).save(self.current_dir + '/final_results/alpha_channel.png', 'PNG')
+        final_patch = torch.cat([self.adv_patch_cpu.squeeze(0), self.alpha_tensor_cpu.squeeze(0)])
         transforms.ToPILImage()(final_patch.cpu()).save(self.current_dir + '/final_results/final_patch_w_alpha.png', 'PNG')
         # save losses
         with open(self.current_dir + '/losses/train_losses', 'wb') as fp:

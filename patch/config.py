@@ -30,7 +30,7 @@ class BaseConfiguration:
         self.max_prob_weight = 3
         self.pres_det_weight = 1
 
-        self.num_of_dots = 1
+        self.num_of_dots = 2
         # self.alpha = 0.1
 
 

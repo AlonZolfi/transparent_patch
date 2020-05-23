@@ -6,6 +6,7 @@ from torchvision import transforms
 from torchvision.transforms import functional as TF
 
 import numpy as np
+from PIL import Image, ImageDraw
 
 global device
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -20,7 +21,11 @@ class PatchApplier(nn.Module):
         super(PatchApplier, self).__init__()
 
     def forward(self, img_batch, adv_patch, alpha):
+        # adv_patch = adv_patch.permute(0, 2, 3, 1)
+        alpha = torch.where((adv_patch == 1), torch.zeros(size=alpha.size(), device=device), alpha)
         batch = (img_batch * (1.0-alpha)) + (adv_patch * alpha)
+        # transforms.ToPILImage()(batch[0].cpu()).show()
+        # transforms.ToPILImage()(img_batch[0].cpu()).show()
         return batch
 
 
@@ -101,8 +106,8 @@ class TotalVariation(nn.Module):
         self.weight = weight
 
     def forward(self, adv_patch):
-        h_tv = F.l1_loss(adv_patch[:, 1:, :], adv_patch[:, :-1, :], reduction='mean')  # calc height tv
-        w_tv = F.l1_loss(adv_patch[:, :, 1:], adv_patch[:, :, :-1], reduction='mean')  # calc width tv
+        h_tv = F.l1_loss(adv_patch[:, :, 1:, :], adv_patch[:, :, :-1, :], reduction='mean')  # calc height tv
+        w_tv = F.l1_loss(adv_patch[:, :, :, 1:], adv_patch[:, :, :, :-1], reduction='mean')  # calc width tv
         loss = h_tv + w_tv
         return self.weight * loss
 
@@ -112,20 +117,56 @@ class DotApplier(nn.Module):
         super(DotApplier, self).__init__()
         self.img_size = img_size
         self.num_of_dots = num_of_dots
-        self.width = 0.05
-        self.params = nn.Parameter(torch.rand(size=(num_of_dots, 2), device=device), requires_grad=True)
+        self.theta = nn.Parameter(torch.tensor([[[1, 0, -0.5],
+                                                [0, 1, -0.5]],
+                                                [[1, 0, -0.3],
+                                                 [0, 1, -0.4]]
+                                                ], device=device), requires_grad=True)
+        self.theta.register_hook(self.zero_grads)
+        # stam = torch.tensor(-0.5)
+        # self.theta = nn.Parameter(torch.tensor([[[1, 0, stam],
+        #                                         [0, 1, -0.5]],
+        #                                         [[1, 0, -0.7],
+        #                                         [0, 1, -0.7]]
+        #                                         ])[None], requires_grad=True)
+        self.colors = [[50, 100, 150], [20, 215, 80]]
+
+    def zero_grads(self, grads):
+        grads[:, 0, 0] = 0
+        grads[:, 0, 1] = 0
+        grads[:, 1, 0] = 0
+        grads[:, 1, 1] = 0
 
     def forward(self, adv_patch):
         for i in range(self.num_of_dots):
-            x_center = self.params[i, 0]
-            y_center = self.params[i, 1]
-            x1 = torch.floor((x_center-(self.width/2))*self.img_size).long()
-            x2 = torch.floor((x_center+(self.width/2))*self.img_size).long()
-            y1 = torch.floor((y_center-(self.width/2))*self.img_size).long()
-            y2 = torch.floor((y_center+(self.width/2))*self.img_size).long()
-            adv_patch[:, x1:x2, y1:y2] = 30
-            # transforms.ToPILImage()(adv_patch.cpu()).show()
+            dot_tensor = self.draw_dot_on_image(i)
+            # transforms.ToPILImage()(dot_tensor.cpu().squeeze()).show()
+            # get affine matrix
+            theta = self.theta[i][None]
+            # get affine grid from affine matrix
+            grid = F.affine_grid(theta, list(adv_patch.size()))
+            # apply affine transformations - translation
+            translated_dot = F.grid_sample(dot_tensor, grid, padding_mode='border')
+            # transforms.ToPILImage()(translated_dot.cpu().squeeze()).show()
+            adv_patch = torch.where((translated_dot != 1), translated_dot, adv_patch)
+            transforms.ToPILImage()(adv_patch.cpu().squeeze()).show()
         return adv_patch
+
+    def draw_dot_on_image(self, idx):
+        mask_img = Image.new('RGB', size=(self.img_size, self.img_size), color=(255, 255, 255))
+        draw = ImageDraw.Draw(mask_img)
+        x_center = 51
+        y_center = 51
+        radius = 50
+        draw.ellipse((x_center - radius, y_center - radius, x_center + radius, y_center + radius), fill=(0, 0, 0))
+        one_indices = (transforms.ToTensor()(mask_img) == 0)
+        color = self.colors[idx]
+        r, g, b = color[0] / 255, color[1] / 255, color[2] / 255
+        blank_tensor = torch.full((1, 3, self.img_size, self.img_size), dtype=torch.float32, fill_value=1)
+        blank_tensor[:, 0].masked_fill_(mask=one_indices[0], value=r)
+        blank_tensor[:, 1].masked_fill_(mask=one_indices[1], value=g)
+        blank_tensor[:, 2].masked_fill_(mask=one_indices[2], value=b)
+        return blank_tensor.to(device)
 
 
 class IoU(nn.Module):
