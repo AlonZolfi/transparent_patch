@@ -24,18 +24,18 @@ def detect(cfgfile, weightfile, imgfile):
     if use_cuda:
         m.cuda()
 
-    sum = np.zeros(13)
-    for imgfile in os.listdir('../datasets/lisa_detected/images'):
-        img = Image.open('../datasets/lisa_detected/images/'+imgfile).convert('RGB')
-        sized = img.resize((m.width, m.height))
-        boxes = do_detect(m, sized, 0.5, 0.4, use_cuda)
-        for box in boxes:
-            sum[box[6]] += 1
+    img = Image.open(imgfile).convert('RGB')
+    sized = img.resize((m.width, m.height))
 
+    start = time.time()
+    boxes = do_detect(m, sized, 0.5, 0.4, use_cuda)
+    finish = time.time()
 
-    print(sum)
-    # class_names = load_class_names(namesfile)
-    plot_boxes(img, boxes, 'predictions1.jpg', class_names)
+    print('%s: Predicted in %f seconds.' % (imgfile, (finish - start)))
+
+    class_names = load_class_names(namesfile)
+    plot_boxes(img, boxes, 'predictions.jpg', class_names)
+
 
 def detect_cv2(cfgfile, weightfile, imgfile):
     import cv2
