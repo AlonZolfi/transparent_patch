@@ -2,8 +2,9 @@
 
 ### sbatch config parameters must start with #SBATCH, to ignore just add another # - like ##SBATCH
 
-#SBATCH --partition gtx1080		### specify partition name where to run a job
-		
+#SBATCH --partition short		### specify partition name where to run a job
+#SBATCH --qos shabtaia		### priority
+
 ##SBATCH --time 1-11:00:00			### limit the time of job running, partition limit can override this
 
 #SBATCH --job-name patch-train			### name of the job

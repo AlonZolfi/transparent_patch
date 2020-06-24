@@ -1,6 +1,7 @@
 import numpy as np
 from torchvision import transforms
 
+
 class EarlyStopping:
     """
     Early stops the training if validation loss doesn't improve after a given patience.
@@ -22,14 +23,16 @@ class EarlyStopping:
         self.val_loss_min = np.Inf
         self.delta = delta
         self.current_dir = current_dir
+        self.best_patch = None
+        self.best_alpha = None
 
-    def __call__(self, val_loss, patch, epoch):
+    def __call__(self, val_loss, patch, alpha, epoch):
 
         score = -val_loss
 
         if self.best_score is None:
             self.best_score = score
-            self.save_checkpoint(val_loss, patch, epoch)
+            self.save_checkpoint(val_loss, patch, alpha, epoch)
         elif score < self.best_score + self.delta:
             self.counter += 1
             print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
@@ -38,11 +41,11 @@ class EarlyStopping:
                 return True
         else:
             self.best_score = score
-            self.save_checkpoint(val_loss, patch, epoch)
+            self.save_checkpoint(val_loss, patch, alpha,epoch)
             self.counter = 0
         return False
 
-    def save_checkpoint(self, val_loss, patch, epoch):
+    def save_checkpoint(self, val_loss, patch, alpha, epoch):
         """
         Saves model when validation loss decrease.
         """
@@ -53,4 +56,11 @@ class EarlyStopping:
                                                        '/patch_' +
                                                        str(epoch) +
                                                        '.png', 'PNG')
+        transforms.ToPILImage()(alpha.squeeze(0)).save(self.current_dir +
+                                                       '/saved_patches' +
+                                                       '/alpha_' +
+                                                       str(epoch) +
+                                                       '.png', 'PNG')
+        self.best_patch = patch
+        self.best_alpha = alpha
         self.val_loss_min = val_loss

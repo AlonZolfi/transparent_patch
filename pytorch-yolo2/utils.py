@@ -163,7 +163,7 @@ def get_region_boxes(output, conf_thresh, num_classes, anchors, num_anchors, onl
                     ind = b*sz_hwa + i*sz_hw + cy*w + cx
                     det_conf =  det_confs[ind]
                     if only_objectness:
-                        conf =  det_confs[ind]
+                        conf = det_confs[ind]
                     else:
                         conf = det_confs[ind] * cls_max_confs[ind]
     
@@ -181,7 +181,8 @@ def get_region_boxes(output, conf_thresh, num_classes, anchors, num_anchors, onl
                                 if c != cls_max_id and det_confs[ind]*tmp_conf > conf_thresh:
                                     box.append(tmp_conf)
                                     box.append(c)
-                        boxes.append(box)
+                        if cls_max_id <= 12:
+                            boxes.append(box)
         all_boxes.append(boxes)
     t3 = time.time()
     if False:
@@ -191,6 +192,7 @@ def get_region_boxes(output, conf_thresh, num_classes, anchors, num_anchors, onl
         print('      boxes filter : %f' % (t3-t2))
         print('---------------------------------')
     return all_boxes
+
 
 def plot_boxes_cv2(img, boxes, savename=None, class_names=None, color=None):
     import cv2
@@ -219,6 +221,8 @@ def plot_boxes_cv2(img, boxes, savename=None, class_names=None, color=None):
         if len(box) >= 7 and class_names:
             cls_conf = box[5]
             cls_id = box[6]
+            if cls_id == 11:
+                sum +=1
             print('%s: %f' % (class_names[cls_id], cls_conf))
             classes = len(class_names)
             offset = cls_id * 123457 % classes
@@ -265,8 +269,9 @@ def plot_boxes(img, boxes, savename=None, class_names=None):
             green = get_color(1, offset, classes)
             blue  = get_color(0, offset, classes)
             rgb = (red, green, blue)
-            draw.text((x1, y1), class_names[cls_id], fill=rgb)
-        draw.rectangle([x1, y1, x2, y2], outline = rgb)
+            text_loc = (x1-1, y1-1)
+            draw.text(text_loc, class_names[cls_id]+' '+str(round(box[4].item()*box[5].item(),2)), fill=rgb)
+        draw.rectangle([x1, y1, x2, y2], outline=rgb)
     if savename:
         print("save plot results to %s" % savename)
         img.save(savename)

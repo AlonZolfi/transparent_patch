@@ -5,6 +5,7 @@ from models.tiny_yolo import TinyYoloNet
 from utils import *
 from darknet import Darknet
 
+
 def detect(cfgfile, weightfile, imgfile):
     m = Darknet(cfgfile)
 
@@ -23,18 +24,18 @@ def detect(cfgfile, weightfile, imgfile):
     if use_cuda:
         m.cuda()
 
-    img = Image.open(imgfile).convert('RGB')
-    sized = img.resize((m.width, m.height))
-    
-    for i in range(2):
-        start = time.time()
+    sum = np.zeros(13)
+    for imgfile in os.listdir('../datasets/lisa_detected/images'):
+        img = Image.open('../datasets/lisa_detected/images/'+imgfile).convert('RGB')
+        sized = img.resize((m.width, m.height))
         boxes = do_detect(m, sized, 0.5, 0.4, use_cuda)
-        finish = time.time()
-        if i == 1:
-            print('%s: Predicted in %f seconds.' % (imgfile, (finish-start)))
+        for box in boxes:
+            sum[box[6]] += 1
 
-    class_names = load_class_names(namesfile)
-    plot_boxes(img, boxes, 'predictions.jpg', class_names)
+
+    print(sum)
+    # class_names = load_class_names(namesfile)
+    plot_boxes(img, boxes, 'predictions1.jpg', class_names)
 
 def detect_cv2(cfgfile, weightfile, imgfile):
     import cv2
@@ -67,7 +68,7 @@ def detect_cv2(cfgfile, weightfile, imgfile):
             print('%s: Predicted in %f seconds.' % (imgfile, (finish-start)))
 
     class_names = load_class_names(namesfile)
-    plot_boxes_cv2(img, boxes, savename='predictions.jpg', class_names=class_names)
+    plot_boxes_cv2(img, boxes, savename='predictions1.jpg', class_names=class_names)
 
 def detect_skimage(cfgfile, weightfile, imgfile):
     from skimage import io
@@ -100,7 +101,7 @@ def detect_skimage(cfgfile, weightfile, imgfile):
             print('%s: Predicted in %f seconds.' % (imgfile, (finish-start)))
 
     class_names = load_class_names(namesfile)
-    plot_boxes_cv2(img, boxes, savename='predictions.jpg', class_names=class_names)
+    plot_boxes_cv2(img, boxes, savename='predictions1.jpg', class_names=class_names)
 
 
 
@@ -110,9 +111,10 @@ if __name__ == '__main__':
         cfgfile = sys.argv[1]
         cfgfile = 'cfg\yolo_v2-608.cfg'
         weightfile = sys.argv[2]
-        weightfile = 'weights\yolov2-608.weights'
+        weightfile = 'weights\yolo_v2-608.weights'
         imgfile = sys.argv[3]
-        imgfile = '..\datasets\lisa\images\stop_1323803184.avi_image0.png'
+        imgfile = '../patch/try1.png'
+        # imgfile = '..\datasets\lisa_detected\images\stop_1323817816.avi_image19.jpg'
         detect(cfgfile, weightfile, imgfile)
         #detect_cv2(cfgfile, weightfile, imgfile)
         #detect_skimage(cfgfile, weightfile, imgfile)
