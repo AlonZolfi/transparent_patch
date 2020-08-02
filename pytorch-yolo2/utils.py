@@ -209,10 +209,10 @@ def plot_boxes_cv2(img, boxes, savename=None, class_names=None, color=None):
     height = img.shape[0]
     for i in range(len(boxes)):
         box = boxes[i]
-        x1 = int(round((box[0] - box[2]/2.0) * width))
-        y1 = int(round((box[1] - box[3]/2.0) * height))
-        x2 = int(round((box[0] + box[2]/2.0) * width))
-        y2 = int(round((box[1] + box[3]/2.0) * height))
+        x1 = int(round(((box[0] - box[2]/2.0) * width).item()))
+        y1 = int(round(((box[1] - box[3]/2.0) * height).item()))
+        x2 = int(round(((box[0] + box[2]/2.0) * width).item()))
+        y2 = int(round(((box[1] + box[3]/2.0) * height).item()))
 
         if color:
             rgb = color
@@ -221,8 +221,6 @@ def plot_boxes_cv2(img, boxes, savename=None, class_names=None, color=None):
         if len(box) >= 7 and class_names:
             cls_conf = box[5]
             cls_id = box[6]
-            if cls_id == 11:
-                sum +=1
             print('%s: %f' % (class_names[cls_id], cls_conf))
             classes = len(class_names)
             offset = cls_id * 123457 % classes
@@ -363,6 +361,25 @@ def do_detect(model, img, conf_thresh, nms_thresh, use_cuda=1):
         print('           total : %f' % (t5 - t0))
         print('-----------------------------------')
     return boxes
+
+
+global device
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
+def do_detect_batch(model, img_batch, conf_thresh, nms_thresh, use_cuda=True):
+    if img_batch.dim() == 3:
+        img_batch = img_batch.unsqueeze(0)
+    if use_cuda:
+        img_batch = img_batch.to(device)
+    batch_output = model(img_batch)
+    batch_boxes = get_region_boxes(batch_output, conf_thresh, model.num_classes, model.anchors, model.num_anchors)
+    boxes_after_nms = []
+    for boxes in batch_boxes:
+        boxes_after_nms.append(nms(boxes, nms_thresh))
+    del img_batch, batch_output
+    return boxes_after_nms
+
 
 def read_data_cfg(datacfg):
     options = dict()

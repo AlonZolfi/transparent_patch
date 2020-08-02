@@ -1,3 +1,25 @@
+import os
+import numpy as np
+import torch
+import random
+
+
+def set_random_seed(seed_value, use_cuda=True):
+    np.random.seed(seed_value) # cpu vars
+    torch.manual_seed(seed_value) # cpu  vars
+    random.seed(seed_value) # Python
+    # os.environ['PYTHONHASHSEED'] = str(seed_value) # Python hash buildin
+    if use_cuda:
+        torch.cuda.manual_seed(seed_value)
+        torch.cuda.manual_seed_all(seed_value) # gpu vars
+        torch.backends.cudnn.deterministic = True  #needed
+        torch.backends.cudnn.benchmark = False
+
+
+seed = 42
+set_random_seed(seed)
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

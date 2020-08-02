@@ -16,7 +16,7 @@ def detect():
         img = Image.open('../datasets/lisa_detected/images/' + img_file).convert('RGB')
         sized = img.resize((yolo.width, yolo.height))
         boxes = do_detect(yolo, sized, 0.5, 0.4, True)
-        with open('../datasets/extra_labeled/annotations/'+img_file.replace('.jpg', '.txt'), 'w') as f:
+        with open('../datasets/extra_labeled/annotations_only_stop_sign/'+img_file.replace('.jpg', '.txt'), 'w') as f:
             for box in boxes:
                 if box[6].item() != 11:
                     f.write(str(box[6].item()) + " "
@@ -24,7 +24,7 @@ def detect():
                             + str(round(box[1].item(), 3)) + " "
                             + str(round(box[2].item(), 3)) + " "
                             + str(round(box[3].item(), 3)) + "\n")
-            with open('../datasets/lisa_detected/annotations/' + img_file.replace('.jpg','.txt'), 'r') as true_file:
+            with open('../datasets/lisa_detected/annotations_only_stop_sign/' + img_file.replace('.jpg','.txt'), 'r') as true_file:
                 lines = true_file.readlines()
                 for line in lines:
                     f.write(line)

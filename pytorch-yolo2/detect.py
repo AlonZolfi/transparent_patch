@@ -114,6 +114,7 @@ if __name__ == '__main__':
         weightfile = 'weights\yolo_v2-608.weights'
         imgfile = sys.argv[3]
         imgfile = '../patch/try1.png'
+        imgfile = '../datasets/lisa/images/signalAhead_1324866992.avi_image0.jpg'
         # imgfile = '..\datasets\lisa_detected\images\stop_1323817816.avi_image19.jpg'
         detect(cfgfile, weightfile, imgfile)
         #detect_cv2(cfgfile, weightfile, imgfile)

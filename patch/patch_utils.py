@@ -35,7 +35,7 @@ class EarlyStopping:
             self.save_checkpoint(val_loss, patch, alpha, epoch)
         elif score < self.best_score + self.delta:
             self.counter += 1
-            print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            print(f'EarlyStopping counter: {self.counter} out of {self.patience}', flush=True)
             if self.counter >= self.patience:
                 print("Training stopped - early stopping")
                 return True

@@ -11,6 +11,7 @@ from torch.utils.data import Dataset, SubsetRandomSampler, DataLoader
 
 from torchvision import transforms
 import matplotlib.pyplot as plt
+import random
 
 
 class LisaDataset(Dataset):
@@ -115,28 +116,66 @@ class SplitDataset:
                                        [transforms.Resize((img_size, img_size)),
                                         transforms.ToTensor()]))
 
-    def __call__(self, val_split, test_split, shuffle_dataset, random_seed, batch_size, *args, **kwargs):
-        dataset_size = len(self.dataset)
-        indices = list(range(dataset_size))
-        val_split = int(np.floor(val_split * dataset_size))
-        test_split = int(np.floor(test_split * dataset_size))
-        if shuffle_dataset:
-            np.random.seed(random_seed)
-            np.random.shuffle(indices)
-        train_indices = indices[val_split + test_split:]
-        val_indices = indices[:val_split]
-        test_indices = indices[val_split:val_split + test_split]
+    def __call__(self, val_split, test_split, shuffle_dataset, random_seed, batch_size, ordered, *args, **kwargs):
+        if not ordered:
+            dataset_size = len(self.dataset)
+            indices = list(range(dataset_size))
+            val_split = int(np.floor(val_split * dataset_size))
+            test_split = int(np.floor(test_split * dataset_size))
+            if shuffle_dataset:
+                np.random.seed(random_seed)
+                np.random.shuffle(indices)
+            train_indices = indices[val_split + test_split:]
+            val_indices = indices[:val_split]
+            test_indices = indices[val_split:val_split + test_split]
+        else:
+            train_indices = []
+            val_indices = []
+            test_indices = []
+            all_videos = self.get_frames_per_video()
+            num_of_videos = len(all_videos)
+            s = dict()
+            for idx, image in enumerate(os.listdir('../datasets/lisa_new/images')):
+                video_name = image.split('.avi_')[0]
+                if all_videos[video_name] < int((1 - val_split - test_split) * num_of_videos):
+                    train_indices.append(idx)
+                elif all_videos[video_name] < int((1 - val_split) * num_of_videos):
+                    val_indices.append(idx)
+                else:
+                    test_indices.append(idx)
+                    if video_name in s.keys():
+                        s[video_name] += 1
+                    else:
+                        s[video_name] = 1
+            np.random.shuffle(train_indices)
+            np.random.shuffle(val_indices)
+            np.random.shuffle(test_indices)
 
         # Creating PT data samplers and loaders:
         train_sampler = SubsetRandomSampler(train_indices)
         valid_sampler = SubsetRandomSampler(val_indices)
         test_sampler = SubsetRandomSampler(test_indices)
 
-        train_loader = DataLoader(self.dataset, batch_size=batch_size, sampler=train_sampler, num_workers=4)
+        train_loader = DataLoader(self.dataset, batch_size=batch_size, sampler=train_sampler)
         validation_loader = DataLoader(self.dataset, batch_size=batch_size, sampler=valid_sampler)
         test_loader = DataLoader(self.dataset, sampler=test_sampler)
 
         return train_loader, validation_loader, test_loader
+
+    def get_frames_per_video(self):
+        videos = dict()
+        idx = 1
+        for image in os.listdir('../datasets/lisa_new/images'):
+            video_name = image.split('.avi_')[0]
+            if video_name not in videos.keys():
+                videos[video_name] = 1
+                idx += 1
+        indices_list = [i for i in range(idx)]
+        for key, value in videos.items():
+            rand_value = random.choice(indices_list)
+            videos[key] = rand_value
+            indices_list.remove(rand_value)
+        return videos
 
 
 def main():
