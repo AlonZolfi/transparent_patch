@@ -36,7 +36,7 @@ class DotApplier(nn.Module):
         self.zeros_like_alpha = torch.zeros(size=(img_size, img_size), device=device)
         self.true_like_circle = torch.ones(size=(img_size, img_size), dtype=torch.bool, device=device)
         xx, yy = torch.from_numpy(np.mgrid[:img_size, :img_size])
-        xx, yy = torch.tensor(xx, device=device), torch.tensor(yy, device=device)
+        xx, yy = xx.to(device), yy.to(device)
         self.dist_from_circle_center = ((xx - img_size / 2) ** 2) + ((yy - img_size / 2) ** 2)
 
         # learnable parameters
@@ -89,6 +89,8 @@ class DotApplier(nn.Module):
             translated_alpha = translated_dot[:, -1]
             alpha = torch.where((translated_alpha != 0), translated_alpha, alpha)
 
+        # transforms.ToPILImage()(adv_patch.cpu().squeeze(0)).show()
+        # transforms.ToPILImage()(alpha.cpu().squeeze(0)).show()
         return adv_patch, alpha
 
     def draw_dot_on_image(self, idx):
@@ -102,7 +104,6 @@ class DotApplier(nn.Module):
         blank_tensor[:, 2].masked_fill_(mask=dist_from_circle_bool, value=b)
 
         blank_tensor[:, 3].masked_fill_(mask=dist_from_circle_bool, value=self.alpha_max)
-        # blank_tensor[:, 3] *= torch.exp(-self.dist_from_circle_int**self.beta_dropoff).squeeze(0)
         blank_tensor[:, 3] *= ((-dist_from_circle_int**self.beta_dropoff)+1).squeeze(0)
 
         return blank_tensor
@@ -115,7 +116,7 @@ class WeightClipper(object):
         colors = module.colors.data
         colors.clamp_(0, 1)
         radius = module.radius.data
-        radius.clamp_(0.05, 0.15)
+        radius.clamp_(0.01, 0.10)
 
 
 class Detections(nn.Module):

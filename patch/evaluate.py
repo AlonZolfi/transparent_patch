@@ -101,7 +101,14 @@ class EvaluateYOLO:
         plt.gca().set_xlabel('Recall')
         plt.gca().set_xlim([0, 1.05])
         plt.gca().set_ylim([0, 1.05])
-        plt.gca().legend(loc=4)
+
+        handles, labels = plt.gca().get_legend_handles_labels()
+        # sort both labels and handles by labels
+        labels, handles = zip(*sorted(zip(labels, handles),
+                                      key=lambda t: float(t[0].split('AP: ')[1].replace('%', '')),
+                                      reverse=True))
+        plt.gca().legend(handles, labels, loc=4)
+
         plt.savefig(self.current_dir + '/final_results/' + cls_type + '-pr-curve.png')
         return ap_noise, ap_patch
 
@@ -147,14 +154,14 @@ class EvaluateYOLO:
             other_noise_results.extend(other_noise_result)
 
             # with red filter
-            red_applied_batch = self.patch_applier(img_batch, red_adv_patch, filter_alpha)
+            red_applied_batch = img_batch * red_adv_patch
             img = transforms.ToPILImage()(red_applied_batch.squeeze(0))
             target_red_result, other_red_result = self.get_boxes_annotations(img, self.conf_threshold, 0.4, name)
             target_red_results.extend(target_red_result)
             other_red_results.extend(other_red_result)
 
             # with cyan filter
-            cyan_applied_batch = self.patch_applier(img_batch, cyan_adv_patch, filter_alpha)
+            cyan_applied_batch = img_batch * cyan_adv_patch
             img = transforms.ToPILImage()(cyan_applied_batch.squeeze(0))
             target_cyan_result, other_cyan_result = self.get_boxes_annotations(img, self.conf_threshold, 0.4, name)
             target_cyan_results.extend(target_cyan_result)

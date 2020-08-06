@@ -20,26 +20,26 @@ class BaseConfiguration:
         self.conf_threshold = 0.5
 
         self.sched_cooldown = 0
-        self.sched_patience = 2
-        self.loc_lr = 0.007
-        self.color_lr = 0.007
-        self.radius_lr = 0.007
+        self.sched_patience = 0
+        self.loc_lr = 0.008
+        self.color_lr = 0.008
+        self.radius_lr = 0.002
         self.scheduler_factory = lambda optimizer: optim.lr_scheduler.ReduceLROnPlateau(optimizer,
                                                                                         mode='min',
                                                                                         cooldown=self.sched_cooldown,
                                                                                         patience=self.sched_patience,
                                                                                         factor=0.9,
                                                                                         min_lr=0.001)
-        self.loss_mode = 'cls'  # 'obj * cls', 'obj'
+        self.loss_mode = 'obj * cls'  # 'obj * cls', 'obj'
         self.loss_target = lambda obj, cls: self.get_loss(self.loss_mode, obj, cls)
 
-        self.max_prob_weight = 1
-        self.pres_det_weight = 0
+        self.max_prob_weight = 0.6
+        self.pres_det_weight = 0.4
         self.nps_weight = 0
 
-        self.num_of_dots = 10
+        self.num_of_dots = 12
         self.alpha_max = 0.4
-        self.beta_dropoff = 2
+        self.beta_dropoff = 1
 
     def get_loss(self, loss_mode, obj, cls):
         if loss_mode == 'obj * cls':

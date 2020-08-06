@@ -462,8 +462,8 @@ class TrainPatch:
 
 
 def main():
-    mode = 'private'
-    # mode = 'cluster'
+    # mode = 'private'
+    mode = 'cluster'
     patch_train = TrainPatch(mode)
     # patch_train.get_clean_image_conf()
     patch_train.train()
