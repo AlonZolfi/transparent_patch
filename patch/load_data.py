@@ -107,14 +107,12 @@ class LisaDataset(Dataset):
 
 class SplitDataset:
     def __init__(self, img_dir, lab_dir, max_lab, img_size, transform=None):
-        self.transform = transform
         self.dataset = LisaDataset(img_dir=img_dir,
                                    lab_dir=lab_dir,
                                    max_lab=max_lab,
                                    img_size=img_size,
-                                   transform=transforms.Compose(
-                                       [transforms.Resize((img_size, img_size)),
-                                        transforms.ToTensor()]))
+                                   transform=transform)
+        self.img_dir = img_dir
 
     def __call__(self, val_split, test_split, shuffle_dataset, random_seed, batch_size, ordered, *args, **kwargs):
         if not ordered:
@@ -134,8 +132,7 @@ class SplitDataset:
             test_indices = []
             all_videos = self.get_frames_per_video()
             num_of_videos = len(all_videos)
-            s = dict()
-            for idx, image in enumerate(os.listdir('../datasets/lisa_new/images')):
+            for idx, image in enumerate(os.listdir(self.img_dir)):
                 video_name = image.split('.avi_')[0]
                 if all_videos[video_name] < int((1 - val_split - test_split) * num_of_videos):
                     train_indices.append(idx)
@@ -143,10 +140,6 @@ class SplitDataset:
                     val_indices.append(idx)
                 else:
                     test_indices.append(idx)
-                    if video_name in s.keys():
-                        s[video_name] += 1
-                    else:
-                        s[video_name] = 1
             np.random.shuffle(train_indices)
             np.random.shuffle(val_indices)
             np.random.shuffle(test_indices)
@@ -165,7 +158,61 @@ class SplitDataset:
     def get_frames_per_video(self):
         videos = dict()
         idx = 1
-        for image in os.listdir('../datasets/lisa_new/images'):
+        for image in os.listdir(self.img_dir):
+            video_name = image.split('.avi_')[0]
+            if video_name not in videos.keys():
+                videos[video_name] = 1
+                idx += 1
+        indices_list = [i for i in range(idx)]
+        for key, value in videos.items():
+            rand_value = random.choice(indices_list)
+            videos[key] = rand_value
+            indices_list.remove(rand_value)
+        return videos
+
+
+class SplitDataset1:
+    def __init__(self, img_dir_train_val, lab_dir_train_val, img_dir_test, lab_dir_test, max_lab, img_size, transform=None):
+        self.dataset_train_val = LisaDataset(img_dir=img_dir_train_val,
+                                             lab_dir=lab_dir_train_val,
+                                             max_lab=max_lab,
+                                             img_size=img_size,
+                                             transform=transform)
+        self.dataset_test = LisaDataset(img_dir=img_dir_test,
+                                        lab_dir=lab_dir_test,
+                                        max_lab=max_lab,
+                                        img_size=img_size,
+                                        transform=transform)
+        self.img_dir = img_dir_train_val
+
+    def __call__(self, val_split, test_split, shuffle_dataset, random_seed, batch_size, *args, **kwargs):
+        train_indices = []
+        val_indices = []
+        all_videos = self.get_frames_per_video()
+        num_of_videos = len(all_videos)
+        for idx, image in enumerate(os.listdir(self.img_dir)):
+            video_name = image.split('.avi_')[0]
+            if all_videos[video_name] < int((1 - val_split) * num_of_videos):
+                train_indices.append(idx)
+            else:
+                val_indices.append(idx)
+        np.random.shuffle(train_indices)
+        np.random.shuffle(val_indices)
+
+        # Creating PT data samplers and loaders:
+        train_sampler = SubsetRandomSampler(train_indices)
+        valid_sampler = SubsetRandomSampler(val_indices)
+
+        train_loader = DataLoader(self.dataset_train_val, batch_size=batch_size, sampler=train_sampler)
+        validation_loader = DataLoader(self.dataset_train_val, batch_size=batch_size, sampler=valid_sampler)
+        test_loader = DataLoader(self.dataset_test)
+
+        return train_loader, validation_loader, test_loader
+
+    def get_frames_per_video(self):
+        videos = dict()
+        idx = 1
+        for image in os.listdir(self.img_dir):
             video_name = image.split('.avi_')[0]
             if video_name not in videos.keys():
                 videos[video_name] = 1

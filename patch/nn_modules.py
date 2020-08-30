@@ -32,15 +32,14 @@ class DotApplier(nn.Module):
         self.num_of_dots = num_of_dots
         self.alpha_max = alpha_max
         self.beta_dropoff = beta_dropoff
-
-        self.zeros_like_alpha = torch.zeros(size=(img_size, img_size), device=device)
+        self.zeros_like_circle = torch.zeros(size=(img_size, img_size), device=device)
         self.true_like_circle = torch.ones(size=(img_size, img_size), dtype=torch.bool, device=device)
         xx, yy = torch.from_numpy(np.mgrid[:img_size, :img_size])
         xx, yy = xx.to(device), yy.to(device)
         self.dist_from_circle_center = ((xx - img_size / 2) ** 2) + ((yy - img_size / 2) ** 2)
 
         # learnable parameters
-        radius = torch.empty(size=(self.num_of_dots,), dtype=torch.float).uniform_(0.05, 0.1)
+        radius = torch.empty(size=(self.num_of_dots,), dtype=torch.float).uniform_(0.04, 0.09)
         self.radius = nn.Parameter(radius, requires_grad=True)
 
         colors = torch.empty(size=(self.num_of_dots, 3), dtype=torch.float).uniform_()
@@ -52,27 +51,30 @@ class DotApplier(nn.Module):
 
     def get_circles(self, radius):
         circle = self.dist_from_circle_center / (radius * self.img_size) ** 2
-        dist_from_circle_int = torch.where(circle > 1, self.zeros_like_alpha, circle)
+        dist_from_circle_int = torch.where(circle > 1, self.zeros_like_circle, circle)
         dist_from_circle_bool = torch.where(circle <= 1, self.true_like_circle, ~self.true_like_circle)
         return dist_from_circle_bool, dist_from_circle_int
 
     def create_rand_translation(self):
-        theta = torch.empty(size=(self.num_of_dots, 2, 3), dtype=torch.float).uniform_(-0.9, 0.9)
+        theta = torch.empty(size=(self.num_of_dots, 2, 3), dtype=torch.float)
         theta[:, 0, 0] = 1
         theta[:, 0, 1] = 0
+        theta[:, 0, 2].uniform_(-0.9, 0.9)  # x axis
         theta[:, 1, 0] = 0
         theta[:, 1, 1] = 1
+        theta[:, 1, 2].uniform_(0, 0.9)  # y axis
         return theta
 
-    def zero_grads(self, grads):
+    @staticmethod
+    def zero_grads(grads):
         grads[:, 0, 0] = 0
         grads[:, 0, 1] = 0
         grads[:, 1, 0] = 0
         grads[:, 1, 1] = 0
 
     def forward(self, adv_patch, alpha):
-        adv_patch.fill_(0.)
-        alpha.fill_(0.)
+        adv_patch.fill_(-1.)
+        alpha.fill_(-1.)
         for i in range(self.num_of_dots):
             # draw circle in the middle of the image
             dot_tensor = self.draw_dot_on_image(i)
@@ -84,11 +86,13 @@ class DotApplier(nn.Module):
             translated_dot = F.grid_sample(dot_tensor, grid, padding_mode='border')
 
             translated_dot_rgb = translated_dot[:, :3]
-            adv_patch = torch.where((translated_dot_rgb != 0), translated_dot_rgb, adv_patch)
+            adv_patch = torch.where((translated_dot_rgb >= 0), translated_dot_rgb, adv_patch)
 
             translated_alpha = translated_dot[:, -1]
-            alpha = torch.where((translated_alpha != 0), translated_alpha, alpha)
+            alpha = torch.where((translated_alpha >= 0), translated_alpha, alpha)
 
+        adv_patch = torch.where((adv_patch < 0), torch.zeros_like(adv_patch), adv_patch)
+        alpha = torch.where((alpha < 0), torch.zeros_like(alpha), alpha)
         # transforms.ToPILImage()(adv_patch.cpu().squeeze(0)).show()
         # transforms.ToPILImage()(alpha.cpu().squeeze(0)).show()
         return adv_patch, alpha
@@ -98,34 +102,153 @@ class DotApplier(nn.Module):
         color = self.colors[idx]
         r, g, b = color[0], color[1], color[2]
 
-        blank_tensor = torch.zeros((1, 4, self.img_size, self.img_size), device=device)
+        blank_tensor = torch.full((1, 4, self.img_size, self.img_size), device=device, fill_value=-1.)
         blank_tensor[:, 0].masked_fill_(mask=dist_from_circle_bool, value=r)
         blank_tensor[:, 1].masked_fill_(mask=dist_from_circle_bool, value=g)
         blank_tensor[:, 2].masked_fill_(mask=dist_from_circle_bool, value=b)
 
         blank_tensor[:, 3].masked_fill_(mask=dist_from_circle_bool, value=self.alpha_max)
-        blank_tensor[:, 3] *= ((-dist_from_circle_int**self.beta_dropoff)+1).squeeze(0)
-
+        blank_tensor[:, 3] *= ((-0.8*dist_from_circle_int**self.beta_dropoff)+1).squeeze(0)
+        # blank_tensor[:, 3] *= torch.exp((-dist_from_circle_int)**self.beta_dropoff).squeeze(0)
         return blank_tensor
 
 
 class WeightClipper(object):
+    def __init__(self, radius_lower_bound, radius_upper_bound):
+        self.radius_lower_bound = radius_lower_bound
+        self.radius_upper_bound = radius_upper_bound
+
     def __call__(self, module):
         coordinates = module.theta[:, :, 2].data
-        coordinates.clamp_(-0.9, 0.9)
+        coordinates.clamp_(-0.99, 0.99)
         colors = module.colors.data
-        colors.clamp_(0, 1)
+        colors.clamp_(0.001, 0.999)
         radius = module.radius.data
-        radius.clamp_(0.01, 0.10)
+        radius.clamp_(self.radius_lower_bound, self.radius_upper_bound)
 
 
-class Detections(nn.Module):
+class DetectionsYolov5(nn.Module):
+    """
+    PatchApplier: applies adversarial patches to images.
+    Module providing the functionality necessary to apply a patch to all detections in all images in the batch.
+    """
+    def __init__(self, cls_id, num_cls, config, clean_img_conf, conf_threshold):
+        super(DetectionsYolov5, self).__init__()
+        self.cls_id = cls_id
+        self.num_cls = num_cls
+        self.config = config
+        self.clean_img_conf = clean_img_conf
+        self.conf_threshold = conf_threshold
+
+    def forward(self, lab_batch, output, img_names):
+        def get_correct_ids():
+            ids = np.unique(
+                batch_idx[i][(batch_idx[i] >= 0) & (batch_idx[i] != self.config.class_id)].cpu().numpy().astype(int))
+            clean_img_values = []
+            for lab_id in ids:
+                clean_img_values.append(self.clean_img_conf[img_names[i]][lab_id])
+            max_clean = np.array(clean_img_values)
+            clean_gt = max_clean > self.conf_threshold
+            return ids[clean_gt].tolist()
+
+        output_patch = output.clone()
+        output_patch = output_patch.transpose(1, 2).contiguous()
+
+        output_objectness_patch, output_cls_patch = output_patch[:, 4, :], output_patch[:, 5:, :]
+
+        batch_idx = lab_batch[..., 0:1]  # [(lab_batch[..., 0:1] != float(self.cls_id)) & (lab_batch[..., 0:1] != -1.)]
+        total_loss = torch.empty(0).to(device)
+        for i in range(batch_idx.size()[0]):
+            ids = get_correct_ids()
+            if len(ids) == 0:
+                continue
+            # get relevant classes
+            confs_for_class_patch = output_cls_patch[i, ids, :]
+
+            confs_if_object_patch = self.config.loss_target(output_objectness_patch[i][None], confs_for_class_patch)
+
+            # find the max prob for each related class
+            max_patch, _ = torch.max(confs_if_object_patch, dim=1)
+
+            clean_img_values = []
+            for lab_id in ids:
+                clean_img_values.append(self.clean_img_conf[img_names[i]][lab_id])
+
+            # loss calc
+            max_clean = torch.tensor(clean_img_values, device=device)
+            curr_loss = torch.mean(torch.abs(max_clean-max_patch))  # get the mean of each image detections
+            total_loss = torch.cat([total_loss, curr_loss.unsqueeze(0)])  # concat with prev results
+
+        if total_loss.size()[0] == 0:
+            total_loss = torch.zeros(1)
+
+        confs_for_attacked_class = output_cls_patch[:, self.cls_id, :]  # [batch, 1805]
+        confs_if_object = self.config.loss_target(output_objectness_patch, confs_for_attacked_class)  # [batch, 1805]
+        # find the max probability for stop sign
+        max_conf, _ = torch.max(confs_if_object, dim=1)  # [batch]
+        return max_conf, total_loss
+
+
+class NonPrintabilityScore(nn.Module):
+    def __init__(self, printability_file, num_of_dots):
+        super(NonPrintabilityScore, self).__init__()
+        self.num_of_dots = num_of_dots
+        self.printability_array = self.get_printability_array(printability_file)
+
+    def get_printability_array(self, printability_file):
+        printability_list = []
+
+        # read in printability triplets and put them in a list
+        with open(printability_file) as f:
+            for line in f:
+                str_arr = line.rstrip().split(",")
+                float_arr = [float(num) for num in str_arr]
+                printability_list.append(float_arr)
+
+        printability_array = []
+        for printability_triplet in printability_list:
+            printability_imgs = []
+            red, green, blue = printability_triplet
+            printability_imgs.append(np.full(self.num_of_dots, red))
+            printability_imgs.append(np.full(self.num_of_dots, green))
+            printability_imgs.append(np.full(self.num_of_dots, blue))
+            printability_array.append(printability_imgs)
+
+        printability_arr = torch.tensor(printability_array, dtype=torch.float32, device=device)
+        return printability_arr
+
+    def forward(self, dot_colors):
+        # calculate RMSE distance between dot colors and printability array
+        color_dist = (dot_colors.T - self.printability_array) + torch.finfo(torch.float32).eps
+        color_dist = color_dist ** 2
+        color_dist = torch.sum(color_dist, 1) + torch.finfo(torch.float32).eps
+        color_dist = torch.sqrt(color_dist)
+        # find the min distance between a dot color to printability array color
+        color_dist_prod, _ = torch.min(color_dist, 0)
+        # get the min between all colors
+        nps_score = torch.mean(color_dist_prod)
+        return nps_score
+
+
+class NoiseAmount(nn.Module):
+    def __init__(self, low, high):
+        super(NoiseAmount, self).__init__()
+        self.low = low
+        self.high = high
+
+    def forward(self, radiuses):
+        noise = (radiuses - self.low) / (self.high - self.low)
+        noise = noise.mean()
+        return noise
+
+
+class DetectionsYolov2(nn.Module):
     """
     PatchApplier: applies adversarial patches to images.
     Module providing the functionality necessary to apply a patch to all detections in all images in the batch.
     """
     def __init__(self, weight_cls, weight_others, cls_id, num_cls, config, num_anchor, clean_img_conf, conf_threshold):
-        super(Detections, self).__init__()
+        super(DetectionsYolov2, self).__init__()
         self.weight_targeted = weight_cls
         self.weight_untargeted = weight_others
         self.cls_id = cls_id
@@ -196,48 +319,6 @@ class Detections(nn.Module):
         output_objectness_patch = torch.sigmoid(output[:, 4, :])  # [batch, 1805]
         output = output[:, 5:5 + self.num_cls, :]  # [batch, 80, 1805]
         return output_objectness_patch, output
-
-
-class NonPrintabilityScore(nn.Module):
-    def __init__(self, printability_file, num_of_dots, weight):
-        super(NonPrintabilityScore, self).__init__()
-        self.num_of_dots = num_of_dots
-        self.printability_array = self.get_printability_array(printability_file)
-        self.weight = weight
-
-    def get_printability_array(self, printability_file):
-        printability_list = []
-
-        # read in printability triplets and put them in a list
-        with open(printability_file) as f:
-            for line in f:
-                str_arr = line.rstrip().split(",")
-                float_arr = [float(num) for num in str_arr]
-                printability_list.append(float_arr)
-
-        printability_array = []
-        for printability_triplet in printability_list:
-            printability_imgs = []
-            red, green, blue = printability_triplet
-            printability_imgs.append(np.full(self.num_of_dots, red))
-            printability_imgs.append(np.full(self.num_of_dots, green))
-            printability_imgs.append(np.full(self.num_of_dots, blue))
-            printability_array.append(printability_imgs)
-
-        printability_arr = torch.tensor(printability_array, dtype=torch.float32, device=device)
-        return printability_arr
-
-    def forward(self, dot_colors):
-        # calculate RMSE distance between dot colors and printability array
-        color_dist = (dot_colors.T - self.printability_array) + torch.finfo(torch.float32).eps
-        color_dist = color_dist ** 2
-        color_dist = torch.sum(color_dist, 1) + torch.finfo(torch.float32).eps
-        color_dist = torch.sqrt(color_dist)
-        # find the min distance between a dot color to printability array color
-        color_dist_prod, _ = torch.min(color_dist, 0)
-        # get the min between all colors
-        nps_score = torch.mean(color_dist_prod)
-        return self.weight * nps_score
 
 
 class DistanceDots(nn.Module):
